@@ -1,0 +1,5 @@
+{
+  "name": "소공인협회 캐릭터 키오스크",
+  "description": "어린이 책잔치 행사용 캐릭터 대화 및 사진 촬영 키오스크",
+  "requestFramePermissions": ["camera", "microphone"]
+}
