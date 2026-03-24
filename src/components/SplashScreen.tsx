@@ -30,7 +30,11 @@ const SplashScreen: React.FC<SplashScreenProps> = ({ onStart, logoSrc }) => {
           className="relative"
         >
           {/* Outer Glow */}
-          <div className="absolute inset-0 bg-white/20 rounded-full blur-3xl animate-pulse" />
+          <motion.div 
+            animate={{ opacity: [0.4, 0.6, 0.4] }}
+            transition={{ duration: 5, repeat: Infinity, ease: "easeInOut" }}
+            className="absolute inset-0 bg-white/10 rounded-full blur-3xl" 
+          />
           
           <img 
             src={logoSrc} 
