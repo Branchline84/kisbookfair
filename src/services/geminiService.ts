@@ -72,7 +72,7 @@ export function getCachedGreetingAudio(characterName: string): string | null {
 export async function generateGreetingText(characterName: string, characterPersonality: string, userName: string): Promise<string> {
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-2.0-flash",
       contents: `너는 사단법인 한국소공인협회의 마스코트 캐릭터 '${characterName}'야. 성격은 ${characterPersonality}.
 지금 '어린이 책잔치' 행사에 온 어린이 방문객과 대화하고 있어.
 어린이가 자신의 이름을 '${userName}'라고 대답했어. 이 대답에서 어린이의 진짜 이름을 파악해서 불러줘.
@@ -106,7 +106,7 @@ export async function generateChatResponse(
     contents.push({ role: 'user', parts: [{ text: userMessage }] });
 
     const response = await ai.models.generateContent({
-      model: "gemini-1.5-flash",
+      model: "gemini-2.0-flash",
       contents: contents,
       config: {
         responseMimeType: "application/json",
@@ -149,10 +149,30 @@ export async function generateChatResponse(
   }
 }
 
+export async function extractNameFromText(text: string): Promise<string | null> {
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.0-flash",
+      contents: `다음 문장에서 어린이가 말한 자신의 이름만 추출해줘. 이름이 없으면 null을 반환해.
+문장: "${text}"
+
+규칙:
+- 오직 이름만 반환 (예: "홍길동")
+- 이름이 없거나 불확실하면 정확히 "null" 이라고만 반환
+- 다른 설명 절대 붙이지 말 것`,
+    });
+    const result = (response.text || '').trim();
+    if (!result || result === 'null') return null;
+    return result;
+  } catch {
+    return null;
+  }
+}
+
 export async function generateAudio(characterName: string, text: string): Promise<string | null> {
   try {
     let voiceName = 'Kore'; // 기본 (Ara)
-    if (characterName === '갓도령') voiceName = 'Puck'; // 소년/학자 (Gat)
+    if (characterName === '갓도령') voiceName = 'Charon'; // 차분한 남성 (Gat)
     if (characterName === '호백') voiceName = 'Fenrir'; // 굵은/수호신 (Hobaek)
 
     const audioResponse = await ai.models.generateContent({

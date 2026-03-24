@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Mic, MicOff, RotateCcw, ArrowRight, MessageCircle } from 'lucide-react';
 import { Character } from '../types';
-import { generateAudio, generateChatResponse, getCachedGreetingAudio } from '../services/geminiService';
+import { generateAudio, generateChatResponse, getCachedGreetingAudio, extractNameFromText } from '../services/geminiService';
 import { CharacterMedia } from './CharacterMedia';
 
 interface ConversationProps {
@@ -25,38 +25,40 @@ export function Conversation({ character, userName, onUserNameSet, onActivitySel
   const [detectedActivity, setDetectedActivity] = useState<'photo' | 'craft' | 'tshirt' | 'none'>('none');
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const recognitionRef = useRef<any>(null);
+  const handleUserMessageRef = useRef<(text: string) => void>(() => {});
 
   // Auto-play audio when audioBase64 changes
   useEffect(() => {
-    if (audioBase64) {
-      const audio = new Audio(`data:audio/wav;base64,${audioBase64}`);
-      audioRef.current = audio;
-      setIsSpeaking(true);
-      audio.onended = () => {
-        setIsSpeaking(false);
-        if (recognitionRef.current && !isListening && detectedActivity === 'none') {
-          setTimeout(() => {
-            try {
-              recognitionRef.current.start();
-            } catch (e) {
-              console.error("Could not auto-start mic");
-            }
-          }, 500);
-        }
-      };
-      audio.play().catch(e => {
-        console.error("Audio playback failed");
-        setIsSpeaking(false);
-      });
+    if (!audioBase64) return;
+
+    // 이전 오디오 정리
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.onended = null;
+      audioRef.current = null;
     }
-    return () => {
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
-        setIsSpeaking(false);
+
+    const audio = new Audio(`data:audio/wav;base64,${audioBase64}`);
+    audioRef.current = audio;
+    setIsSpeaking(true);
+
+    audio.onended = () => {
+      setIsSpeaking(false);
+      if (recognitionRef.current && detectedActivity === 'none') {
+        setTimeout(() => {
+          try { recognitionRef.current.start(); } catch (e) {}
+        }, 500);
       }
     };
-  }, [audioBase64, detectedActivity, isListening]);
+
+    audio.play().catch(() => setIsSpeaking(false));
+
+    // ✅ cleanup은 컴포넌트 언마운트 시에만 동작
+    return () => {
+      audio.pause();
+      audio.onended = null;
+    };
+  }, [audioBase64]); // ✅ audioBase64만 의존
 
   const speakNativeFallback = (text: string) => {
     if ('speechSynthesis' in window) {
@@ -83,15 +85,18 @@ export function Conversation({ character, userName, onUserNameSet, onActivitySel
     }
   };
 
+  const hasGreetedRef = useRef(false);
+
   // Initial Greeting with Name Request
   useEffect(() => {
     const initGreeting = async () => {
-      if (messages.length > 0) return;
+      if (messages.length > 0 || hasGreetedRef.current) return;
+      hasGreetedRef.current = true;
       
       setIsProcessing(true);
       const greeting = userName 
         ? `안녕 ${userName}! 다시 만나서 반가워. 오늘은 어떤 이야기를 해볼까?`
-        : `안녕! 나는 소공인들을 돕는 수호신 호백이야. 어린이 친구, 만나서 반가워! 너는 이름이 뭐야?`;
+        : `안녕! 나는 소공인들을 돕는 갓도령이야. 어린이 친구, 만나서 반가워! 너는 이름이 뭐야?`;
       
       setMessages([{ role: 'ai', text: greeting }]);
       let audio = getCachedGreetingAudio(character.name);
@@ -114,15 +119,17 @@ export function Conversation({ character, userName, onUserNameSet, onActivitySel
       recognition.onstart = () => setIsListening(true);
       recognition.onresult = async (event: any) => {
         const transcript = event.results[0][0].transcript;
-        handleUserMessage(transcript);
+        handleUserMessageRef.current(transcript); // ✅ 항상 최신 함수 참조
       };
       recognition.onerror = () => setIsListening(false);
       recognition.onend = () => setIsListening(false);
       recognitionRef.current = recognition;
     }
-  }, [messages]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // ✅ 초기 마운트 시 1회만 생성
 
   const handleUserMessage = async (text: string) => {
+    handleUserMessageRef.current = handleUserMessage; // ref 항상 최신 유지
     const newMessages = [...messages, { role: 'user' as const, text }];
     setMessages(newMessages);
     setIsProcessing(true);
@@ -131,8 +138,8 @@ export function Conversation({ character, userName, onUserNameSet, onActivitySel
     // Topic-based Character Switching Logic
     let activeChar = character;
     if (text.includes('정품인증') || text.includes('인증마크')) {
-      const gat = CHARACTERS.find(c => c.id === 'gat');
-      if (gat && character.id !== 'gat') {
+      const gat = CHARACTERS.find(c => c.id === 'gatdoryeong'); // ✅ 수정된 ID
+      if (gat && character.id !== 'gatdoryeong') {
         onCharacterChange(gat);
         activeChar = gat;
       }
@@ -153,9 +160,9 @@ export function Conversation({ character, userName, onUserNameSet, onActivitySel
         userName
       );
 
-      // Name extraction logic (very simple for now)
-      if (!userName && text.length < 10 && (text.includes('야') || text.includes('이야') || text.includes('어') || text.includes('나 '))) {
-        const extractedName = text.replace(/나 |야|이야|어|라고 해/g, '').trim();
+      // ✅ Gemini 기반 이름 추출 (정확도 대폭 향상)
+      if (!userName) {
+        const extractedName = await extractNameFromText(text);
         if (extractedName) onUserNameSet(extractedName);
       }
 

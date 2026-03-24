@@ -25,9 +25,9 @@ export default function App() {
   };
 
   const handleStart = () => {
-    // Default to Hobaek (Suho-sin) for initial greeting
-    const hobaek = CHARACTERS.find(c => c.id === 'hobaek') || CHARACTERS[0];
-    setSelectedChar(hobaek);
+    // Default to Gat-doryeong for initial greeting
+    const gat = CHARACTERS.find(c => c.id === 'gatdoryeong') || CHARACTERS[0];
+    setSelectedChar(gat);
     setAppState('CONVERSATION');
   };
 
