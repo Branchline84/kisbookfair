@@ -94,9 +94,9 @@ export function Conversation({ character, userName, onUserNameSet, onActivitySel
       hasGreetedRef.current = true;
       
       setIsProcessing(true);
-      const greeting = userName 
+      const greeting = userName
         ? `안녕 ${userName}! 다시 만나서 반가워. 오늘은 어떤 이야기를 해볼까?`
-        : `안녕! 나는 소공인들을 돕는 갓도령이야. 어린이 친구, 만나서 반가워! 너는 이름이 뭐야?`;
+        : `안녕! 나는 ${character.name}이야. 어린이 친구, 만나서 정말 반가워! 넌 이름이 뭐야?`;
       
       setMessages([{ role: 'ai', text: greeting }]);
       let audio = getCachedGreetingAudio(character.name);

@@ -38,55 +38,55 @@ export function PhotoBooth({ character: initialCharacter, onCapture }: PhotoBoot
           canvas.width = img.width;
           canvas.height = img.height;
           const ctx = canvas.getContext('2d');
-          if (ctx) {
-            // 카메라 화면 그리기
-            ctx.drawImage(img, 0, 0);
-            
-            // 캐릭터 미디어 가져오기
-            const characterVideo = characterRef.current?.querySelector('video');
-            const characterImg = characterRef.current?.querySelector('img');
-            const characterCanvas = characterRef.current?.querySelector('canvas');
-            const mediaElement = characterCanvas || characterVideo || characterImg;
+          if (!ctx) return;
 
-            if (mediaElement) {
-              const charHeight = canvas.height * 0.9; // 크기 확대
-              let aspectRatio = 1;
-              
-              if (mediaElement instanceof HTMLVideoElement) {
-                aspectRatio = mediaElement.videoWidth / mediaElement.videoHeight || 1;
-              } else if (mediaElement instanceof HTMLImageElement) {
-                aspectRatio = mediaElement.naturalWidth / mediaElement.naturalHeight || 1;
-              } else if (mediaElement instanceof HTMLCanvasElement) {
-                aspectRatio = mediaElement.width / mediaElement.height || 1;
-              }
-              
-              const charWidth = aspectRatio * charHeight;
-              
-              // 캐릭터 우측에 배치
-              ctx.drawImage(
-                mediaElement as CanvasImageSource, 
-                canvas.width - charWidth, 
-                canvas.height - charHeight, 
-                charWidth, 
-                charHeight
-              );
-            }
+          // 카메라 화면 그리기
+          ctx.drawImage(img, 0, 0);
 
+          const finishPhoto = () => {
             // Footer / Branding Overlay
             ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
             ctx.fillRect(0, canvas.height - 80, canvas.width, 80);
-            
             ctx.fillStyle = 'white';
-            ctx.font = 'black 24px sans-serif';
+            ctx.font = 'bold 24px sans-serif';
             ctx.textAlign = 'left';
             ctx.fillText('사단법인 한국소공인협회', 40, canvas.height - 35);
-            
             ctx.textAlign = 'right';
             ctx.fillText('파주인쇄소공인특화지원센터', canvas.width - 40, canvas.height - 35);
-            
-            // 최종 이미지를 생성하여 전달
-            const finalImage = canvas.toDataURL('image/jpeg', 0.95);
-            onCapture(finalImage);
+            onCapture(canvas.toDataURL('image/jpeg', 0.95));
+          };
+
+          // SVG 캐릭터 캡처
+          const svgEl = characterRef.current?.querySelector('svg');
+          if (svgEl && characterRef.current) {
+            const charDiv = characterRef.current;
+            const divW = charDiv.offsetWidth || 400;
+            const divH = charDiv.offsetHeight || 600;
+
+            // SVG 직렬화 후 캔버스에 렌더링
+            const serializer = new XMLSerializer();
+            let svgStr = serializer.serializeToString(svgEl);
+            if (!svgStr.includes('xmlns=')) {
+              svgStr = svgStr.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+            }
+            // 명시적 크기 부여
+            svgStr = svgStr.replace(/<svg([^>]*)>/, `<svg$1 width="${divW}" height="${divH}">`);
+
+            const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const svgImg = new Image();
+            svgImg.onload = () => {
+              const charH = canvas.height * 0.9;
+              const charW = (divW / divH) * charH;
+              ctx.drawImage(svgImg, canvas.width - charW, canvas.height - charH, charW, charH);
+              URL.revokeObjectURL(url);
+              finishPhoto();
+            };
+            svgImg.onerror = () => { URL.revokeObjectURL(url); finishPhoto(); };
+            svgImg.src = url;
+          } else {
+            // SVG 없으면 그냥 사진만
+            finishPhoto();
           }
         };
         img.src = imageSrc;

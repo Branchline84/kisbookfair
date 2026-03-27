@@ -25,10 +25,7 @@ export default function App() {
   };
 
   const handleStart = () => {
-    // Default to Gat-doryeong for initial greeting
-    const gat = CHARACTERS.find(c => c.id === 'gatdoryeong') || CHARACTERS[0];
-    setSelectedChar(gat);
-    setAppState('CONVERSATION');
+    setAppState('SELECT_CHARACTER');
   };
 
   const handleCharacterSelect = (char: Character) => {
