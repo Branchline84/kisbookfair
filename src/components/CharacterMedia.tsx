@@ -3,13 +3,15 @@ import { motion } from 'motion/react';
 import { AnimatedCharacter } from './AnimatedCharacter';
 
 type CharacterId = 'ara' | 'gatdoryeong' | 'hobaek';
+type Mood = 'neutral' | 'happy' | 'excited' | 'thinking';
+type Mode = 'full' | 'profile';
 
 interface CharacterMediaProps {
   src: string;
   className?: string;
   isSpeaking?: boolean;
-  mood?: 'happy' | 'neutral' | 'excited' | 'thinking';
-  mode?: 'full' | 'profile';
+  mood?: Mood;
+  mode?: Mode;
 }
 
 /** src 문자열에서 characterId를 추론합니다 */
@@ -25,8 +27,8 @@ export const CharacterMedia: React.FC<CharacterMediaProps> = ({
   src,
   className = 'w-full h-full',
   isSpeaking = false,
-  mood = 'neutral',
-  mode = 'full',
+  mood = 'neutral' as Mood,
+  mode = 'full' as Mode,
 }) => {
   const charId = detectCharId(src);
 
