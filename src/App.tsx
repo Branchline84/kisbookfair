@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { AnimatePresence, motion } from 'motion/react';
-import { Sparkles } from 'lucide-react';
+import { AnimatePresence } from 'motion/react';
+import { Sparkles, Home } from 'lucide-react';
 import { Character, AppState } from './types';
 import { CharacterSelect } from './components/CharacterSelect';
 import { Conversation } from './components/Conversation';
@@ -8,30 +8,27 @@ import { ActivitySelect } from './components/ActivitySelect';
 import { FarewellCraft, FarewellPhoto } from './components/Farewell';
 import { PhotoBooth } from './components/PhotoBooth';
 import { PhotoReview } from './components/PhotoReview';
-import SplashScreen from './components/SplashScreen';
-import { CHARACTERS } from './constants';
+import { prefetchGreetingAudio } from './services/geminiService';
 
 export default function App() {
-  const [appState, setAppState] = useState<AppState>('SPLASH');
+  const [appState, setAppState] = useState<AppState>('SELECT_CHARACTER');
   const [selectedChar, setSelectedChar] = useState<Character | null>(null);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
-  const [userName, setUserName] = useState<string>('');
 
   const resetApp = () => {
-    setAppState('SPLASH');
+    setAppState('SELECT_CHARACTER');
     setSelectedChar(null);
     setCapturedImage(null);
-    setUserName('');
-  };
-
-  const handleStart = () => {
-    // Default to Gat-doryeong for initial greeting
-    const gat = CHARACTERS.find(c => c.id === 'gatdoryeong') || CHARACTERS[0];
-    setSelectedChar(gat);
-    setAppState('CONVERSATION');
   };
 
   const handleCharacterSelect = (char: Character) => {
+    // Unlock audio context for auto-play
+    const silentAudio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFRm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==');
+    silentAudio.play().catch(() => {});
+    
+    // Prefetch greeting for the selected character only to conserve quota
+    prefetchGreetingAudio(char.name, char.personality);
+    
     setSelectedChar(char);
     setAppState('CONVERSATION');
   };
@@ -48,102 +45,88 @@ export default function App() {
   };
 
   return (
-    <div className="fixed inset-0 bg-white text-slate-800 font-sans overflow-hidden flex flex-col selection:bg-indigo-100 selection:text-indigo-900">
-      {/* Immersive Floating Header */}
-      <AnimatePresence>
-        {appState !== 'SPLASH' && (
-          <header className="absolute top-0 left-0 right-0 p-8 flex items-center justify-between z-50 pointer-events-none">
-            <motion.div 
-              initial={{ y: -20, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              exit={{ y: -20, opacity: 0 }}
-              className="flex items-center gap-3 bg-white/60 backdrop-blur-xl px-6 py-3 rounded-full shadow-2xl border border-white/40 pointer-events-auto cursor-pointer"
-              onClick={resetApp}
-            >
-              <div className="bg-indigo-600 p-2 rounded-lg shadow-lg shadow-indigo-200">
-                <Sparkles className="text-white" size={20} />
-              </div>
-              <h1 className="text-lg font-black text-slate-900 tracking-tighter uppercase whitespace-nowrap">사단법인 한국소공인협회</h1>
-            </motion.div>
-            
-            <motion.div 
-              initial={{ y: -20, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              exit={{ y: -20, opacity: 0 }}
-              transition={{ delay: 0.1 }}
-              className="bg-slate-900/5 backdrop-blur-md px-5 py-2.5 rounded-full border border-black/5 pointer-events-auto"
-            >
-              <span className="text-sm font-black text-slate-600 tracking-widest uppercase">어린이 책잔치</span>
-            </motion.div>
-          </header>
-        )}
-      </AnimatePresence>
+    <div className="kiosk-wrapper">
+      <div className="kiosk-container text-slate-800 font-sans">
+        {/* Header */}
+        <header className="bg-white shadow-sm p-4 flex items-center justify-between z-50 relative border-b border-slate-100">
+          <div className="flex items-center gap-4">
+            {appState !== 'SELECT_CHARACTER' && (
+              <button 
+                onClick={resetApp}
+                className="p-2 hover:bg-slate-100 rounded-full text-slate-600 transition-colors active:scale-90"
+                title="처음으로"
+              >
+                <Home size={24} />
+              </button>
+            )}
+            <div className="flex items-center gap-2">
+              <Sparkles className="text-indigo-500" size={20} />
+              <h1 className="text-lg font-bold text-slate-800">사단법인 한국소공인협회</h1>
+            </div>
+          </div>
+          <div className="text-sm font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-full">어린이 책잔치</div>
+        </header>
 
-      {/* Main Content Area */}
-      <main className="flex-1 relative flex items-center justify-center overflow-hidden">
-        <AnimatePresence mode="wait">
-          {appState === 'SPLASH' && (
-            <SplashScreen key="splash" onStart={handleStart} logoSrc="/ksalogo.png" />
-          )}
-          {appState === 'SELECT_CHARACTER' && (
-            <CharacterSelect key="select" onSelect={handleCharacterSelect} />
-          )}
-          {appState === 'CONVERSATION' && selectedChar && (
-            <Conversation 
-              key="conversation" 
-              character={selectedChar} 
-              userName={userName}
-              onUserNameSet={setUserName}
-              onActivitySelect={(activity: 'photo' | 'craft' | 'tshirt' | 'manual') => {
-                if (activity === 'manual') {
-                  setAppState('ACTIVITY_SELECT');
-                } else {
-                  handleActivitySelect(activity as any);
-                }
-              }}
-              // Passing setter to allow Conversation to switch character based on topic
-              onCharacterChange={setSelectedChar}
-            />
-          )}
-          {appState === 'ACTIVITY_SELECT' && selectedChar && (
-            <ActivitySelect 
-              key="activity" 
-              character={selectedChar} 
-              onSelect={handleActivitySelect} 
-            />
-          )}
-          {appState === 'FAREWELL_CRAFT' && selectedChar && (
-            <FarewellCraft key="farewell-craft" character={selectedChar} />
-          )}
-          {appState === 'PHOTO_BOOTH' && selectedChar && (
-            <PhotoBooth 
-              key="photo" 
-              character={selectedChar} 
-              onCapture={(img) => {
-                setCapturedImage(img);
-                setAppState('PHOTO_REVIEW');
-              }} 
-            />
-          )}
-          {appState === 'PHOTO_REVIEW' && capturedImage && selectedChar && (
-            <PhotoReview 
-              key="review" 
-              imageSrc={capturedImage} 
-              onRetake={() => {
-                setCapturedImage(null);
-                setAppState('PHOTO_BOOTH');
-              }}
-              onDownload={() => {
-                setAppState('FAREWELL_PHOTO');
-                setTimeout(() => resetApp(), 5000);
-              }}
-            />
-          )}
-          {appState === 'FAREWELL_PHOTO' && selectedChar && (
-            <FarewellPhoto key="farewell-photo" character={selectedChar} />
-          )}
-        </AnimatePresence>
-      </main>
+        {/* Main Content Area */}
+        <main className="flex-1 relative flex items-center justify-center overflow-hidden">
+          <AnimatePresence mode="wait">
+            {appState === 'SELECT_CHARACTER' && (
+              <CharacterSelect key="select" onSelect={handleCharacterSelect} />
+            )}
+            {appState === 'CONVERSATION' && selectedChar && (
+              <Conversation 
+                key="conversation" 
+                character={selectedChar} 
+                onBack={resetApp}
+                onActivitySelect={(activity: 'photo' | 'craft' | 'tshirt' | 'manual') => {
+                  if (activity === 'manual') {
+                    setAppState('ACTIVITY_SELECT');
+                  } else {
+                    handleActivitySelect(activity);
+                  }
+                }}
+              />
+            )}
+            {appState === 'ACTIVITY_SELECT' && selectedChar && (
+              <ActivitySelect 
+                key="activity" 
+                character={selectedChar} 
+                onSelect={handleActivitySelect} 
+              />
+            )}
+            {appState === 'FAREWELL_CRAFT' && selectedChar && (
+              <FarewellCraft key="farewell-craft" character={selectedChar} />
+            )}
+            {appState === 'PHOTO_BOOTH' && selectedChar && (
+              <PhotoBooth 
+                key="photo" 
+                character={selectedChar} 
+                onCapture={(img) => {
+                  setCapturedImage(img);
+                  setAppState('PHOTO_REVIEW');
+                }} 
+              />
+            )}
+            {appState === 'PHOTO_REVIEW' && capturedImage && selectedChar && (
+              <PhotoReview 
+                key="review" 
+                imageSrc={capturedImage} 
+                onRetake={() => {
+                  setCapturedImage(null);
+                  setAppState('PHOTO_BOOTH');
+                }}
+                onDownload={() => {
+                  setAppState('FAREWELL_PHOTO');
+                  setTimeout(() => resetApp(), 5000);
+                }}
+              />
+            )}
+            {appState === 'FAREWELL_PHOTO' && selectedChar && (
+              <FarewellPhoto key="farewell-photo" character={selectedChar} />
+            )}
+          </AnimatePresence>
+        </main>
+      </div>
     </div>
   );
 }

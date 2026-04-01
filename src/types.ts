@@ -5,11 +5,11 @@ export type Character = {
   personality: string;
   color: string;
   image: string;
-  profileImage?: string;
+  idleImage?: string;
+  fallbackImage?: string;
 };
 
 export type AppState =
-  | 'SPLASH'
   | 'SELECT_CHARACTER'
   | 'CONVERSATION'
   | 'ACTIVITY_SELECT'

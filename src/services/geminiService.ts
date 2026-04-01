@@ -1,7 +1,6 @@
 import { GoogleGenAI, Modality, Type } from "@google/genai";
 
-const apiKey = process.env.GEMINI_API_KEY || "DUMMY_KEY";
-const ai = new GoogleGenAI({ apiKey });
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 function writeString(view: DataView, offset: number, string: string) {
   for (let i = 0; i < string.length; i++) {
@@ -50,150 +49,193 @@ function pcmToWavBase64(pcmBase64: string, sampleRate = 24000): string {
   return window.btoa(wavBinaryString);
 }
 
-const greetingAudioCache: Record<string, string> = {};
+const greetingAudioCache: Record<string, Promise<string | null>> = {};
 
-export async function prefetchGreetingAudio(characterName: string) {
+export async function prefetchGreetingAudio(characterName: string, personality: string) {
   if (greetingAudioCache[characterName]) return;
-  const greeting = `안녕! 나는 ${characterName}야. 만나서 반가워! 넌 이름이 뭐야?`;
-  try {
-    const audio = await generateAudio(characterName, greeting);
-    if (audio) {
-      greetingAudioCache[characterName] = audio;
-    }
-  } catch (e) {
-    console.error("Failed to prefetch greeting audio");
-  }
+  const greeting = `안녕? 나는 ${characterName}야. 만나서 반가워~ 넌 이름이 뭐야?`;
+  console.log(`Prefetching greeting audio for ${characterName}`);
+  
+  // Create a promise with a timeout
+  const generatePromise = generateAudio(characterName, greeting);
+  const timeoutPromise = new Promise<null>((_, reject) => 
+    setTimeout(() => reject(new Error("Prefetch Timeout")), 15000)
+  );
+
+  greetingAudioCache[characterName] = Promise.race([generatePromise, timeoutPromise])
+    .catch((e) => {
+      console.warn(`Prefetch failed for ${characterName}:`, e.message);
+      delete greetingAudioCache[characterName];
+      return null;
+    });
 }
 
-export function getCachedGreetingAudio(characterName: string): string | null {
-  return greetingAudioCache[characterName] || null;
+export async function getCachedGreetingAudio(characterName: string): Promise<string | null> {
+  if (greetingAudioCache[characterName]) {
+    try {
+      // Add a small timeout even for cached results to be safe
+      const timeoutPromise = new Promise<null>((_, reject) => 
+        setTimeout(() => reject(new Error("Cache Wait Timeout")), 5000)
+      );
+      return await Promise.race([greetingAudioCache[characterName], timeoutPromise]);
+    } catch (e) {
+      console.warn(`Cache retrieval failed for ${characterName}:`, e);
+      return null;
+    }
+  }
+  return null;
 }
 
 export async function generateGreetingText(characterName: string, characterPersonality: string, userName: string): Promise<string> {
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: `너는 사단법인 한국소공인협회의 마스코트 캐릭터 '${characterName}'야. 성격은 ${characterPersonality}.
-지금 '어린이 책잔치' 행사에 온 어린이 방문객과 대화하고 있어.
-어린이가 자신의 이름을 '${userName}'라고 대답했어. 이 대답에서 어린이의 진짜 이름을 파악해서 불러줘.
-
-다음 내용을 포함해서 친근하고 재미있게 2~3문장으로 짧게 말해줘:
+    const response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        characterName,
+        characterPersonality,
+        history: [],
+        userMessage: `어린이가 자신의 이름을 '${userName}'라고 대답했어. 이 대답에서 어린이의 진짜 이름을 파악해서 불러줘.
+다음 내용을 포함해서 아주 밝고 활기차고 신나는 목소리로, 친근하고 재미있게 2~3문장으로 짧게 말해줘:
 1. 파악한 어린이의 이름을 반갑게 부르며 인사하기
 2. '소공인'은 우리 생활에 필요한 물건을 직접 만드는 멋진 장인이라고 아주 짧게 설명하기
-3. '나랑 같이 사진 찍을래? 아니면 칠보공예 체험이나 티셔츠 만들기를 할래?' 라고 물어보기
-
-어린이에게 말하는 것이니 다정하고 친근하게 말해줘. 너무 길지 않게 해줘.`,
+3. '나랑 같이 사진 찍을래? 아니면 칠보공예 체험이나 티셔츠 만들기를 할래?' 라고 물어보기`
+      })
     });
-    return response.text || "안녕! 만나서 반가워!";
+    const result = await response.json();
+    return result.text || "안녕? 만나서 반가워~";
   } catch (error) {
-    console.error("Gemini API Error");
-    return `안녕 ${userName}! 어린이 책잔치에 온 걸 환영해! 나는 ${characterName}야. 소공인은 우리 생활에 필요한 멋진 물건을 직접 만드는 장인들이란다. 나랑 같이 사진 찍을래? 아니면 칠보공예 체험이나 티셔츠 만들기를 할래?`;
+    console.error("OpenAI Chat Proxy Error", error);
+    return `안녕? ${userName}~ 어린이 책잔치에 온 걸 환영해! 나는 ${characterName}야. 소공인은 우리 생활에 필요한 멋진 물건을 직접 만드는 장인들이란다. 나랑 같이 사진 찍을래? 아니면 칠보공예 체험이나 티셔츠 만들기를 할래?`;
   }
 }
 
-export async function generateChatResponse(
-  characterName: string, 
-  characterPersonality: string, 
-  history: {role: string, text: string}[], 
-  userMessage: string,
-  userName?: string
-): Promise<{text: string, detectedActivity: 'photo' | 'craft' | 'tshirt' | 'none'}> {
+export async function generateChatResponse(characterName: string, characterPersonality: string, history: {role: string, text: string}[], userMessage: string): Promise<{text: string, detectedActivity: 'photo' | 'craft' | 'tshirt' | 'none'}> {
   try {
-    const contents = history.map(h => ({
-      role: h.role === 'ai' ? 'model' : 'user',
-      parts: [{ text: h.text }]
-    }));
-    contents.push({ role: 'user', parts: [{ text: userMessage }] });
-
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: contents,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            text: { type: Type.STRING, description: "AI의 대답 텍스트 (1~3문장)" },
-            detectedActivity: { type: Type.STRING, enum: ["photo", "craft", "tshirt", "none"], description: "사용자가 선택한 체험. 아직 선택하지 않았거나 모호하면 'none'" }
-          },
-          required: ["text", "detectedActivity"]
-        },
-        systemInstruction: `너는 사단법인 한국소공인협회(KSA)의 마스코트 캐릭터 '${characterName}'야. 성격은 ${characterPersonality}.
-지금 '어린이 책잔치' 행사에 온 어린이 방문객${userName ? ` '${userName}'` : ''}과 대화하고 있어.
-어린이에게 다정하고 친근하게 반말이나 해요체로 대답해줘.${userName ? ` 가끔씩 '${userName}' 친구의 이름을 불러주면 좋아.` : ''}
-
-[필수 안내 사항]
-1. 소공인은 우리 생활에 필요한 물건을 직접 만드는 멋진 장인이라는 점을 자연스럽게 알려줘.
-2. 대화가 어느 정도 진행되면 '나랑 같이 사진 찍을래? 아니면 칠보공예 체험이나 티셔츠 만들기를 할래?'라고 물어봐줘.
-
-[특별 지식: 한국소공인정품인증마크]
-어린이가 "정품인증마크가 뭐야?" 등 마크에 대해 물어보면, 이 마크가 얼마나 중요하고 대단한 기술인지 조금 더 상세하고 자랑스럽게 설명해줘. (어린이가 이해할 수 있는 언어를 쓰되, 너무 가볍게 넘기지 말고 자세히 설명할 것). 이 주제로 대화할 때는 평소보다 더 열정적으로 설명해줘. 다음 내용을 반드시 포함해서 상세히 설명해:
-1. "이건 사단법인 한국소공인협회에서 '대한민국 최초'로 만들어낸 소공인 제품 정품인증 시스템이야!" 라고 강조하기.
-2. 나쁜 가짜 물건(위조품)을 차단하고, 우리 소공인들이 정성껏 만든 진짜 물건을 보호하기 위해 만들어졌다는 목적 설명하기.
-3. '디지마크'라는 아주 특별하고 뛰어난 기술을 활용해서 절대 복제가 불가능한 태그 시스템을 만들었다는 점 알려주기.
-4. 오직 '한국소공인협회 프로그램'을 통해서만 진짜인지(정품인증) 확인할 수 있다는 특별함 설명하기.
-* 주의: 정품인증마크에 대한 답변은 1~3문장 제한을 무시하고, 위 내용이 모두 전달되도록 충분히 길고 상세하게 대답해줘.
-
-[동작 규칙]
-- 어린이가 체험(사진, 칠보공예, 티셔츠) 중 하나를 명확히 선택했다면 detectedActivity에 해당 값을 넣고, 그에 맞는 호응을 text에 적어줘.
-- 아직 선택하지 않았다면 detectedActivity는 'none'으로 설정해.
-- 일반적인 대답은 1~3문장으로 짧고 대화하듯이 하되, '정품인증마크'에 대한 설명은 예외로 상세하게 해줘.`
-      }
+    const response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        characterName,
+        characterPersonality,
+        history,
+        userMessage
+      })
     });
-    
-    const result = JSON.parse(response.text || '{"text": "응, 그렇구나!", "detectedActivity": "none"}');
+    const result = await response.json();
     return result;
-  } catch (error) {
-    console.error("Gemini API Error");
+  } catch (error: any) {
+    console.error("OpenAI Chat Proxy Error", error);
     return { text: "미안해, 지금은 귀가 잘 안 들려. 다시 말해줄래?", detectedActivity: "none" };
   }
 }
 
-export async function extractNameFromText(text: string): Promise<string | null> {
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: `다음 문장에서 어린이가 말한 자신의 이름만 추출해줘. 이름이 없으면 null을 반환해.
-문장: "${text}"
+const audioCache = new Map<string, string>();
 
-규칙:
-- 오직 이름만 반환 (예: "홍길동")
-- 이름이 없거나 불확실하면 정확히 "null" 이라고만 반환
-- 다른 설명 절대 붙이지 말 것`,
+async function generateTTSProxy(characterName: string, text: string): Promise<string | null> {
+  console.log(`Calling Edge TTS Proxy for ${characterName}: "${text.substring(0, 20)}..."`);
+  
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
+  try {
+    const response = await fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ characterName, text }),
+      signal: controller.signal
     });
-    const result = (response.text || '').trim();
-    if (!result || result === 'null') return null;
-    return result;
-  } catch {
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      console.warn("Edge TTS Proxy returned error:", response.status, errorData);
+      return null;
+    }
+
+    const data = await response.json();
+    if (data.audioContent) {
+      return `data:audio/mp3;base64,${data.audioContent}`;
+    }
+    return null;
+  } catch (error: any) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      console.error("Edge TTS Proxy Timeout (10s)");
+    } else {
+      console.error("Edge TTS Proxy Fetch Error", error);
+    }
     return null;
   }
 }
 
 export async function generateAudio(characterName: string, text: string): Promise<string | null> {
-  try {
-    let voiceName = 'Kore'; // 기본 (Ara)
-    if (characterName === '갓도령') voiceName = 'Charon'; // 차분한 남성 (Gat)
-    if (characterName === '호백') voiceName = 'Fenrir'; // 굵은/수호신 (Hobaek)
+  const cacheKey = `${characterName}|${text}`;
+  if (audioCache.has(cacheKey)) {
+    return audioCache.get(cacheKey) || null;
+  }
 
-    const audioResponse = await ai.models.generateContent({
-      model: "gemini-1.5-flash-tts",
-      contents: [{ parts: [{ text }] }],
+  // 1. Try Gemini TTS first (User explicitly requested this specific voice!)
+  try {
+    console.log(`Generating Gemini TTS for ${characterName}: "${text.substring(0, 20)}..."`);
+    
+    // Map characters to Gemini voices
+    let voiceName = 'Kore'; // Default: Cheerful female (Ara)
+    let promptPrefix = "Say cheerfully: ";
+
+    if (characterName === '호백') {
+      voiceName = 'Fenrir'; // Deep male
+      promptPrefix = "Say in a deep, friendly voice: ";
+    } else if (characterName === '갓도령') {
+      voiceName = 'Puck'; // Energetic/Confident boy's voice
+      promptPrefix = "Say in a clear, confident, and youthful boy's voice: ";
+    } else if (characterName === '아라') {
+      voiceName = 'Kore'; // Bright female
+      promptPrefix = "Say very cheerfully and brightly: ";
+    }
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash-preview-tts",
+      contents: [{ parts: [{ text: `${promptPrefix}${text}` }] }],
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: {
           voiceConfig: {
-            prebuiltVoiceConfig: { voiceName }
-          }
-        }
-      }
+            prebuiltVoiceConfig: { voiceName },
+          },
+        },
+      },
     });
-    const pcmBase64 = audioResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-    if (pcmBase64) {
-      return pcmToWavBase64(pcmBase64);
+
+    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    if (base64Audio) {
+      // Gemini TTS returns raw PCM (24kHz), we need to wrap it in a WAV header for browser playback
+      const wavAudio = `data:audio/wav;base64,${pcmToWavBase64(base64Audio, 24000)}`;
+      audioCache.set(cacheKey, wavAudio);
+      return wavAudio;
     }
-    return null;
-  } catch (error) {
-    console.error("TTS API Error");
-    return null;
+  } catch (error: any) {
+    // Check for quota exceeded error (429)
+    const errorBody = error.error || error;
+    const isQuotaError = errorBody.code === 429 || error.status === 429 || error.message?.includes('quota');
+    
+    if (isQuotaError) {
+      console.warn("Gemini TTS Quota Exceeded (429), attempting Edge TTS fallback...");
+      // Don't throw yet, try fallback
+    } else {
+      console.error("Gemini TTS Generation Error:", error);
+    }
   }
+
+  // 2. Fallback to Microsoft Edge TTS Proxy if Gemini fails or hits quota
+  const proxyAudio = await generateTTSProxy(characterName, text);
+  if (proxyAudio) {
+    audioCache.set(cacheKey, proxyAudio);
+    return proxyAudio;
+  }
+  
+  // If both fail and it was a quota error, let the UI know
+  // (The UI will then use native browser TTS)
+  return null;
 }

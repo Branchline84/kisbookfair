@@ -19,6 +19,7 @@ export function FarewellCraft({ character }: FarewellProps) {
       <div className="w-64 h-96 mb-12 overflow-hidden">
         <CharacterMedia 
           src={character.image}
+          idleSrc={character.idleImage}
           mood="excited"
         />
       </div>
@@ -46,6 +47,7 @@ export function FarewellPhoto({ character }: FarewellProps) {
       <div className="w-64 h-96 mb-12 overflow-hidden">
         <CharacterMedia 
           src={character.image}
+          idleSrc={character.idleImage}
           mood="excited"
         />
       </div>
