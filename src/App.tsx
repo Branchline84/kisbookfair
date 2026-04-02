@@ -34,13 +34,19 @@ export default function App() {
   };
 
   const handleActivitySelect = (activity: 'photo' | 'craft' | 'tshirt') => {
+    // Stop any ongoing speech when transitioning
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    
     if (activity === 'photo') {
       setAppState('PHOTO_BOOTH');
-    } else {
+    } else if (activity === 'craft' || activity === 'tshirt') {
       setAppState('FAREWELL_CRAFT');
+      // Show farewell screen for 7 seconds (allow time to read) then reset
       setTimeout(() => {
         resetApp();
-      }, 5000);
+      }, 7000);
     }
   };
 

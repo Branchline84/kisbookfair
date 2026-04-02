@@ -176,22 +176,30 @@ export async function generateAudio(characterName: string, text: string): Promis
     return audioCache.get(cacheKey) || null;
   }
 
-  // 1. Try Gemini TTS first (User explicitly requested this specific voice!)
+  // 1. Try Edge TTS first for FASTER response (Lower Latency)
+  // The user complained about thinking time, and Edge TTS is generally more responsive than Gemini TTS Preview
+  const proxyAudio = await generateTTSProxy(characterName, text);
+  if (proxyAudio) {
+    audioCache.set(cacheKey, proxyAudio);
+    return proxyAudio;
+  }
+
+  // 2. Fallback to Gemini TTS if Edge TTS fails
   try {
-    console.log(`Generating Gemini TTS for ${characterName}: "${text.substring(0, 20)}..."`);
+    console.log(`Generating Gemini TTS fallback for ${characterName}: "${text.substring(0, 20)}..."`);
     
     // Map characters to Gemini voices
-    let voiceName = 'Kore'; // Default: Cheerful female (Ara)
+    let voiceName = 'Kore'; 
     let promptPrefix = "Say cheerfully: ";
 
     if (characterName === '호백') {
-      voiceName = 'Fenrir'; // Deep male
+      voiceName = 'Fenrir';
       promptPrefix = "Say in a deep, friendly voice: ";
     } else if (characterName === '갓도령') {
-      voiceName = 'Puck'; // Energetic/Confident boy's voice
+      voiceName = 'Puck';
       promptPrefix = "Say in a clear, confident, and youthful boy's voice: ";
     } else if (characterName === '아라') {
-      voiceName = 'Kore'; // Bright female
+      voiceName = 'Kore';
       promptPrefix = "Say very cheerfully and brightly: ";
     }
 
@@ -210,32 +218,13 @@ export async function generateAudio(characterName: string, text: string): Promis
 
     const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
     if (base64Audio) {
-      // Gemini TTS returns raw PCM (24kHz), we need to wrap it in a WAV header for browser playback
       const wavAudio = `data:audio/wav;base64,${pcmToWavBase64(base64Audio, 24000)}`;
       audioCache.set(cacheKey, wavAudio);
       return wavAudio;
     }
   } catch (error: any) {
-    // Check for quota exceeded error (429)
-    const errorBody = error.error || error;
-    const isQuotaError = errorBody.code === 429 || error.status === 429 || error.message?.includes('quota');
-    
-    if (isQuotaError) {
-      console.warn("Gemini TTS Quota Exceeded (429), attempting Edge TTS fallback...");
-      // Don't throw yet, try fallback
-    } else {
-      console.error("Gemini TTS Generation Error:", error);
-    }
-  }
-
-  // 2. Fallback to Microsoft Edge TTS Proxy if Gemini fails or hits quota
-  const proxyAudio = await generateTTSProxy(characterName, text);
-  if (proxyAudio) {
-    audioCache.set(cacheKey, proxyAudio);
-    return proxyAudio;
+    console.error("Gemini TTS Fallback Error:", error);
   }
   
-  // If both fail and it was a quota error, let the UI know
-  // (The UI will then use native browser TTS)
   return null;
 }

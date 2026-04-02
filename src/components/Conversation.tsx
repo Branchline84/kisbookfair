@@ -4,6 +4,7 @@ import { Mic, MicOff, RotateCcw, ArrowRight, Volume2 } from 'lucide-react';
 import { Character } from '../types';
 import { generateAudio, generateChatResponse, getCachedGreetingAudio } from '../services/geminiService';
 import { CharacterMedia } from './CharacterMedia';
+import { VoiceVisualizer } from './VoiceVisualizer';
 
 interface ConversationProps {
   character: Character;
@@ -289,7 +290,6 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
         
         // Normalize and damp the level for smoother animation
         setAudioLevel(prev => (prev * 0.4) + (boosted * 0.6));
-        if (boosted > 1) console.log("Current Audio Level:", boosted);
         
         animationRef.current = requestAnimationFrame(updateLevel);
       };
@@ -397,6 +397,17 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
             className="w-full h-full"
           />
         </div>
+
+        {/* Improved Visualizer Overlay behind or around the character */}
+        <div className="absolute inset-0 z-0 opacity-40">
+           <VoiceVisualizer 
+             isListening={isListening} 
+             isSpeaking={isSpeaking} 
+             isProcessing={isProcessing} 
+             audioLevel={audioLevel}
+             analyser={analyserRef.current}
+           />
+        </div>
         
         {/* Background decorative elements for kiosk feel */}
         <div className="absolute top-20 left-10 w-32 h-32 bg-indigo-100 rounded-full blur-3xl opacity-60"></div>
@@ -404,8 +415,8 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
       </div>
 
       {/* Text & Interaction Area (Bottom) - Takes the remaining space */}
-      <div className="flex-1 bg-white p-8 pt-6 flex flex-col gap-6 z-20 overflow-y-auto">
-        <div className="w-full relative">
+      <div className="flex-1 bg-white p-8 pt-10 flex flex-col gap-6 z-20 overflow-y-auto">
+        <div className="w-full relative mt-2">
           {isProcessing ? (
             <div className="flex flex-col items-center justify-center py-10 gap-4 bg-slate-50 rounded-3xl border-2 border-dashed border-indigo-100">
               <div className="flex gap-2">
@@ -451,7 +462,11 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
           {detectedActivity !== 'none' && !isProcessing ? (
             <div className="w-full flex flex-col gap-3">
               <button 
-                onClick={() => onActivitySelect(detectedActivity)}
+                onClick={() => {
+                  if (audioRef.current) audioRef.current.pause();
+                  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+                  onActivitySelect(detectedActivity);
+                }}
                 className="w-full py-6 rounded-2xl font-bold text-2xl text-white bg-indigo-600 hover:bg-indigo-700 transition-all flex items-center justify-center gap-3 shadow-lg active:scale-95"
               >
                 {detectedActivity === 'photo' ? '사진 찍으러 가기' : detectedActivity === 'craft' ? '칠보공예 하러 가기' : '티셔츠 만들러 가기'} <ArrowRight size={28} />
@@ -474,32 +489,20 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
                 </p>
               </div>
               
-              <div className="flex items-center gap-6">
-                <div className="w-16 flex justify-end">
-                  {isListening && (
-                    <div className="flex items-end gap-1.5 flex-row-reverse h-16">
-                      {[0, 1, 2, 3, 4].map((i) => (
-                        <motion.div
-                          key={i}
-                          animate={{ 
-                            height: Math.max(8, (audioLevel * (1.2 - i * 0.15))) 
-                          }}
-                          className="w-2.5 bg-indigo-400 rounded-full opacity-70"
-                        />
-                      ))}
-                    </div>
-                  )}
+              <div className="flex items-center justify-center relative w-full h-32">
+                {/* Secondary Visualizer around the mic button */}
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="w-64 h-64">
+                    <VoiceVisualizer 
+                      isListening={isListening} 
+                      isSpeaking={isSpeaking} 
+                      isProcessing={isProcessing} 
+                      audioLevel={audioLevel}
+                    />
+                  </div>
                 </div>
 
                 <div className="relative">
-                  {isListening && (
-                    <motion.div 
-                      initial={{ scale: 0.8, opacity: 0 }}
-                      animate={{ scale: 1.8, opacity: 0 }}
-                      transition={{ duration: 1.5, repeat: Infinity, ease: "easeOut" }}
-                      className="absolute inset-0 bg-indigo-400 rounded-full"
-                    />
-                  )}
                   <button 
                     onClick={toggleListening}
                     disabled={isProcessing}
@@ -511,22 +514,6 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
                   >
                     {isListening ? <MicOff size={44} /> : <Mic size={44} />}
                   </button>
-                </div>
-
-                <div className="w-24 flex justify-start">
-                  {isListening && (
-                    <div className="flex items-end gap-1.5 h-16">
-                      {[0, 1, 2, 3, 4].map((i) => (
-                        <motion.div
-                          key={i}
-                          animate={{ 
-                            height: Math.max(8, (audioLevel * (1.2 - i * 0.15))) 
-                          }}
-                          className="w-2.5 bg-indigo-400 rounded-full opacity-70"
-                        />
-                      ))}
-                    </div>
-                  )}
                 </div>
               </div>
 
