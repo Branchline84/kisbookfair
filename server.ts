@@ -154,11 +154,14 @@ async function startServer() {
         pitch = 3.0; // 발랄한 느낌
       }
 
-      console.log(`Requesting Google TTS for ${characterName}: "${text.substring(0, 20)}..."`);
+      console.log(`[Google TTS] Character: ${characterName}, Text: "${text.substring(0, 20)}..."`);
 
       const response = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
         body: JSON.stringify({
           input: { text },
           voice: { languageCode: 'ko-KR', name: voiceName },
@@ -171,20 +174,20 @@ async function startServer() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        console.error("Google TTS API Error:", errorData);
-        throw new Error(errorData.error?.message || "Google TTS API Request Failed");
+        const errorData = await response.json().catch(() => ({}));
+        console.error("[Google TTS] API Error Response:", errorData);
+        throw new Error(errorData.error?.message || `Google TTS API Request Failed (${response.status})`);
       }
 
       const data: any = await response.json();
       if (data.audioContent) {
-        // Google returns base64 string directly
+        console.log("[Google TTS] Success - Audio data received");
         res.json({ audioContent: data.audioContent });
       } else {
-        throw new Error("Google TTS returned no audio data");
+        throw new Error("Google TTS returned no audio data field");
       }
     } catch (error: any) {
-      console.error("Google TTS Proxy Error:", error.message || error);
+      console.error("[Google TTS] Proxy Error:", error.message || error);
       res.status(500).json({ error: error.message || "Google TTS Failed" });
     }
   });
@@ -277,6 +280,8 @@ async function startServer() {
     const openai = new OpenAI({ apiKey });
 
     try {
+      console.log(`[Chat] Character: ${characterName}, User: "${userMessage.substring(0, 20)}..."`);
+      
       const messages: any[] = [
         {
           role: "system",
@@ -331,6 +336,7 @@ async function startServer() {
       }, { timeout: TIMEOUT_CHAT });
 
       const result = JSON.parse(response.choices[0].message.content || '{"text": "응, 그렇구나!", "detectedActivity": "none"}');
+      console.log("[Chat] Success - Response received");
       res.json(result);
     } catch (error: any) {
       console.error("OpenAI Chat Proxy Error", error);

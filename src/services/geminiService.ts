@@ -103,6 +103,7 @@ async function generateTTSProxy(characterName: string, text: string, endpoint: s
     if (data.audioContent) {
       // Automatic format detection (MP3 or WAV)
       const mimeType = endpoint.includes('gemini') ? 'audio/wav' : 'audio/mp3';
+      console.log(`[TTS Proxy] Success from ${endpoint}`);
       return `data:${mimeType};base64,${data.audioContent}`;
     }
     return null;
@@ -124,13 +125,13 @@ export async function generateAudio(characterName: string, text: string): Promis
   
   // 2. Fallback to Edge TTS if Google fails/quota exceeded
   if (!audio) {
-    console.log("Falling back to Edge TTS...");
+    console.warn("[TTS] Google failed, falling back to Edge...");
     audio = await generateTTSProxy(characterName, text, '/api/tts');
   }
 
   // 3. Last fallback to Gemini TTS Proxy
   if (!audio) {
-    console.log("Falling back to Gemini TTS...");
+    console.warn("[TTS] Edge failed, falling back to Gemini...");
     audio = await generateTTSProxy(characterName, text, '/api/tts/gemini');
   }
 

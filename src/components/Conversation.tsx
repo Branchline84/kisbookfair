@@ -84,13 +84,15 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
           setIsSpeaking(true);
           await audio.play();
         } catch (e: any) {
-          setIsSpeaking(false);
-          if (e.name !== 'AbortError') {
-            console.error("Audio playback failed, falling back to native TTS:", e);
-            if (messages.length > 0 && messages[messages.length - 1].role === 'ai') {
-              speakNativeFallback(messages[messages.length - 1].text);
-            }
+          if (e.name === 'AbortError') {
+            console.log("Audio playback interrupted by pause (expected during cleanup)");
+            return;
           }
+          console.error("[Audio] Playback failed:", e);
+          setIsSpeaking(false);
+          // Removed native fallback to prevent "stupid machine sound" (Issue: User feedback)
+          // notify user visually if needed, but the text is already there.
+          setTimeout(startRecognition, 1000);
         }
       };
 
@@ -250,24 +252,47 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
   };
 
   const handleUserMessage = async (text: string) => {
+    if (!text.trim()) return;
+    
     const newMessages = [...messages, { role: 'user' as const, text }];
     setMessages(newMessages);
     setIsProcessing(true);
     setAudioBase64(null);
     
+    // Safety timeout to prevent "no response" hang
+    const safetyTimeout = setTimeout(() => {
+      if (isProcessing) {
+        console.error("[Chat] Request timed out");
+        setIsProcessing(false);
+        const timeoutMsg = "미안해, 지금은 서버가 좀 느린 것 같아. 다시 한 번 말해줄래?";
+        setMessages(prev => [...prev, { role: 'ai' as const, text: timeoutMsg }]);
+      }
+    }, TIMEOUTS.CHAT_RESPONSE);
+    
     try {
       const aiResponse = await generateChatResponse(character.name, character.personality, messages, text);
+      clearTimeout(safetyTimeout);
+      
       let audio = await generateAudio(character.name, aiResponse.text);
       
       setMessages([...newMessages, { role: 'ai' as const, text: aiResponse.text }]);
       setDetectedActivity(aiResponse.detectedActivity);
       
-      if (audio) setAudioBase64(audio);
-      else speakNativeFallback(aiResponse.text);
+      if (audio) {
+        setAudioBase64(audio);
+      } else {
+        console.error("[TTS] All engines failed to provide audio");
+        // Don't use mechanical sound, just show text and start mic
+        setIsSpeaking(false);
+        setTimeout(startRecognition, 1000);
+      }
     } catch (e: any) {
+      clearTimeout(safetyTimeout);
+      console.error("[Chat] Error", e);
       const fallbackText = "미안해, 지금은 귀가 잘 안 들려. 다시 말해줄래?";
       setMessages([...newMessages, { role: 'ai' as const, text: fallbackText }]);
-      speakNativeFallback(fallbackText);
+      setIsProcessing(false);
+      setTimeout(startRecognition, 2000);
     } finally {
       setIsProcessing(false);
     }
