@@ -104,7 +104,8 @@ export async function generateAudio(characterName: string, text: string): Promis
 
     const data = await response.json();
     if (data.audioContent) {
-      const audio = `data:audio/mp3;base64,${data.audioContent}`;
+      const format = data.format || 'mp3';
+      const audio = `data:audio/${format};base64,${data.audioContent}`;
       audioCache.set(cacheKey, audio);
       return audio;
     }

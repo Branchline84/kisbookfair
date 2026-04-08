@@ -60,6 +60,7 @@ async function startServer() {
         voiceName = 'Aoede'; 
         promptPrefix = "밝고 상냥한 소녀의 목소리로 말해줘: ";
       }
+      console.log(`[Gemini TTS Attempt] voice: ${voiceName}`);
 
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
         method: 'POST',
@@ -81,12 +82,19 @@ async function startServer() {
         const data: any = await response.json();
         const audioBase64 = data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
         if (audioBase64) {
-          return res.json({ audioContent: audioBase64 });
+          console.log("[Gemini TTS] Success - Converting to WAV");
+          
+          // Prepend WAV header for 24kHz, 16-bit, Mono PCM
+          const pcmBuffer = Buffer.from(audioBase64, 'base64');
+          const wavHeader = getWavHeader(pcmBuffer.length, 24000);
+          const wavBuffer = Buffer.concat([wavHeader, pcmBuffer]);
+          
+          return res.json({ audioContent: wavBuffer.toString('base64'), format: 'wav' });
         }
       }
       
       // --- Fallback to Standard Google TTS ---
-      console.warn("[TTS Fallback] Gemini blocked or failed, using standard...");
+      console.warn("[TTS Fallback] Gemini failed/unsupported, using standard...");
       let standardVoice = 'ko-KR-Neural2-A';
       if (characterName === '호백') standardVoice = 'ko-KR-Neural2-C';
       else if (characterName === '갓도령') standardVoice = 'ko-KR-Neural2-B';
@@ -103,15 +111,34 @@ async function startServer() {
 
       const stdData: any = await stdTtsResponse.json();
       if (stdData.audioContent) {
-        res.json({ audioContent: stdData.audioContent });
+        res.json({ audioContent: stdData.audioContent, format: 'mp3' });
       } else {
-        throw new Error("All TTS engines blocked or failed");
+        throw new Error("All TTS engines failed");
       }
     } catch (error: any) {
       console.error("[TTS Final Error]:", error.message);
       res.status(500).json({ error: "음성 생성 실패" });
     }
   });
+
+  // Helper function to create a WAV header for LINEAR16 PCM
+  function getWavHeader(dataLength: number, sampleRate: number) {
+    const buffer = Buffer.alloc(44);
+    buffer.write('RIFF', 0);
+    buffer.writeUInt32LE(dataLength + 36, 4);
+    buffer.write('WAVE', 8);
+    buffer.write('fmt ', 12);
+    buffer.writeUInt32LE(16, 16); // Subchunk1Size
+    buffer.writeUInt16LE(1, 20); // AudioFormat (PCM)
+    buffer.writeUInt16LE(1, 22); // NumChannels (Mono)
+    buffer.writeUInt32LE(sampleRate, 24); // SampleRate
+    buffer.writeUInt32LE(sampleRate * 2, 28); // ByteRate
+    buffer.writeUInt16LE(2, 32); // BlockAlign
+    buffer.writeUInt16LE(16, 34); // BitsPerSample
+    buffer.write('data', 36);
+    buffer.writeUInt32LE(dataLength, 40);
+    return buffer;
+  }
 
   // Cloudinary Image Upload Endpoint
   app.post("/api/upload", async (req, res) => {
