@@ -91,7 +91,11 @@ async function startServer() {
       }
     } catch (error: any) {
       console.error("[Gemini TTS] Error:", error.message || error);
-      res.status(500).json({ error: error.message || "Gemini Voice Generation Failed" });
+      res.status(500).json({ 
+        error: error.message || "Gemini Voice Generation Failed",
+        details: error.stack || "No stack trace available",
+        suggestion: "Check if Google Cloud API Key has permissions for Gemini 2.0 Flash"
+      });
     }
   });
 
