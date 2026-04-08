@@ -117,31 +117,6 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
     };
   }, [audioBase64, startRecognition]);
 
-  const speakNativeFallback = useCallback((text: string) => {
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'ko-KR';
-      utterance.rate = 1.1;
-      
-      const voices = window.speechSynthesis.getVoices();
-      const koVoice = voices.find(v => v.lang.includes('ko'));
-      if (koVoice) utterance.voice = koVoice;
-
-      utterance.onstart = () => setIsSpeaking(true);
-      utterance.onend = () => {
-        setIsSpeaking(false);
-        startRecognition();
-      };
-      utterance.onerror = () => setIsSpeaking(false);
-
-      window.speechSynthesis.speak(utterance);
-    } else {
-      // Hard fallback if no TTS at all
-      setTimeout(startRecognition, 3000);
-    }
-  }, [startRecognition]);
-
   // Initial greeting
   useEffect(() => {
     if (initializedCharacter.current === character.name) return;
@@ -168,11 +143,16 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
         setIsProcessing(false);
       }
       
-      if (audio) setAudioBase64(audio);
-      else speakNativeFallback(greeting);
+      if (audio) {
+        setAudioBase64(audio);
+      } else {
+        console.error("[Greeting] Audio failed");
+        setIsSpeaking(false);
+        setTimeout(startRecognition, 1000);
+      }
     };
     initGreeting();
-  }, [character, speakNativeFallback]);
+  }, [character, startRecognition]);
 
   // Recognition setup
   useEffect(() => {
@@ -347,7 +327,7 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
               <p className="text-xl leading-relaxed text-slate-800 font-semibold text-center whitespace-pre-wrap">
                 {latestAiMessage}
                 {!isSpeaking && !isProcessing && latestAiMessage && (
-                  <button onClick={() => generateAudio(character.name, latestAiMessage).then(a => a ? setAudioBase64(a) : speakNativeFallback(latestAiMessage))} className="inline-block ml-2 p-1.5 text-indigo-500 bg-white rounded-full shadow-sm align-middle"><Volume2 size={18} /></button>
+                  <button onClick={() => generateAudio(character.name, latestAiMessage).then(a => a && setAudioBase64(a))} className="inline-block ml-2 p-1.5 text-indigo-500 bg-white rounded-full shadow-sm align-middle"><Volume2 size={18} /></button>
                 )}
               </p>
             </div>
