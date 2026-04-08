@@ -78,14 +78,17 @@ export async function generateChatResponse(characterName: string, characterPerso
 const audioCache = new Map<string, string>();
 const greetingAudioCache: Record<string, Promise<string | null>> = {};
 
-async function generateTTSProxy(characterName: string, text: string, endpoint: string = '/api/tts'): Promise<string | null> {
-  console.log(`Calling TTS Proxy (${endpoint}) for ${characterName}: "${text.substring(0, 20)}..."`);
-  
+export async function generateAudio(characterName: string, text: string): Promise<string | null> {
+  const cacheKey = `${characterName}|${text}`;
+  if (audioCache.has(cacheKey)) {
+    return audioCache.get(cacheKey) || null;
+  }
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 12000);
 
   try {
-    const response = await fetch(endpoint, {
+    const response = await fetch('/api/tts/google', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ characterName, text }),
@@ -95,49 +98,20 @@ async function generateTTSProxy(characterName: string, text: string, endpoint: s
     clearTimeout(timeoutId);
 
     if (!response.ok) {
-      console.warn(`${endpoint} returned error:`, response.status);
+      console.error(`[Google TTS] Error ${response.status}`);
       return null;
     }
 
     const data = await response.json();
     if (data.audioContent) {
-      // Automatic format detection (MP3 or WAV)
-      const mimeType = endpoint.includes('gemini') ? 'audio/wav' : 'audio/mp3';
-      console.log(`[TTS Proxy] Success from ${endpoint}`);
-      return `data:${mimeType};base64,${data.audioContent}`;
+      const audio = `data:audio/mp3;base64,${data.audioContent}`;
+      audioCache.set(cacheKey, audio);
+      return audio;
     }
     return null;
   } catch (error: any) {
     clearTimeout(timeoutId);
-    console.error(`${endpoint} Fetch Error`, error);
+    console.error('[Google TTS] Fetch error:', error);
     return null;
   }
-}
-
-export async function generateAudio(characterName: string, text: string): Promise<string | null> {
-  const cacheKey = `${characterName}|${text}`;
-  if (audioCache.has(cacheKey)) {
-    return audioCache.get(cacheKey) || null;
-  }
-
-  // 1. Try Google Cloud TTS first (Premium Quality - Requested Priority 1)
-  let audio = await generateTTSProxy(characterName, text, '/api/tts/google');
-  
-  // 2. Fallback to Edge TTS if Google fails/quota exceeded
-  if (!audio) {
-    console.warn("[TTS] Google failed, falling back to Edge...");
-    audio = await generateTTSProxy(characterName, text, '/api/tts');
-  }
-
-  // 3. Last fallback to Gemini TTS Proxy
-  if (!audio) {
-    console.warn("[TTS] Edge failed, falling back to Gemini...");
-    audio = await generateTTSProxy(characterName, text, '/api/tts/gemini');
-  }
-
-  if (audio) {
-    audioCache.set(cacheKey, audio);
-  }
-  
-  return audio;
 }

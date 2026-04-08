@@ -3,52 +3,13 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import OpenAI from "openai";
-import { MsEdgeTTS, OUTPUT_FORMAT } from "edge-tts-node";
 import 'dotenv/config';
-import { GoogleGenAI, Modality } from "@google/genai";
 import { v2 as cloudinary } from 'cloudinary';
 
-// Timeouts
-const TIMEOUT_TTS = 12000;
 const TIMEOUT_CHAT = 30000;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-function writeString(view: DataView, offset: number, string: string) {
-  for (let i = 0; i < string.length; i++) {
-    view.setUint8(offset + i, string.charCodeAt(i));
-  }
-}
-
-function pcmToWavBase64(pcmBase64: string, sampleRate = 24000): string {
-  const binaryString = Buffer.from(pcmBase64, 'base64').toString('binary');
-  const pcmLength = binaryString.length;
-  
-  const buffer = new ArrayBuffer(44 + pcmLength);
-  const view = new DataView(buffer);
-  
-  writeString(view, 0, 'RIFF');
-  view.setUint32(4, 36 + pcmLength, true);
-  writeString(view, 8, 'WAVE');
-  writeString(view, 12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  writeString(view, 36, 'data');
-  view.setUint32(40, pcmLength, true);
-  
-  const uint8View = new Uint8Array(buffer);
-  for (let i = 0; i < pcmLength; i++) {
-    uint8View[44 + i] = binaryString.charCodeAt(i);
-  }
-  
-  return Buffer.from(uint8View).toString('base64');
-}
 
 async function startServer() {
   const app = express();
@@ -63,72 +24,19 @@ async function startServer() {
 
   app.use(express.json());
 
-  // Microsoft Edge TTS Proxy Endpoint (High-Quality Korean Mascot Version)
-  app.post("/api/tts", async (req, res) => {
-    const { characterName, text } = req.body;
-    
-    console.log(`Requesting Edge TTS for ${characterName}: "${text.substring(0, 20)}..."`);
-
-    const tts = new MsEdgeTTS({});
-    let stream: any = null;
-
-    try {
-      let voiceName = 'ko-KR-SunHiNeural'; // Default: Bright Female
-      let pitch = '+0%';
-      let rate = '+0%';
-
-      if (characterName === '호백') {
-        voiceName = 'ko-KR-InJoonNeural';
-        pitch = '-5%';
-        rate = '-5%';
-      } else if (characterName === '갓도령') {
-        voiceName = 'ko-KR-SunHiNeural'; 
-        pitch = '+10%';
-        rate = '+5%';
-      } else if (characterName === '아라') {
-        voiceName = 'ko-KR-SunHiNeural'; 
-        pitch = '+15%'; 
-        rate = '+0%';
-      }
-
-      await tts.setMetadata(voiceName, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
-      
-      const ssml = `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='ko-KR'><voice name='${voiceName}'><prosody pitch='${pitch}' rate='${rate}'>${text}</prosody></voice></speak>`;
-      
-      try {
-        stream = tts.rawToStream(ssml);
-      } catch (streamError) {
-        const simpleSsml = `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='ko-KR'><voice name='${voiceName}'>${text}</voice></speak>`;
-        stream = tts.rawToStream(simpleSsml);
-      }
-
-      const chunks: Buffer[] = [];
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("Edge TTS Stream Timeout")), TIMEOUT_TTS)
-      );
-
-      const collectStream = async () => {
-        for await (const chunk of stream) {
-          chunks.push(chunk);
-        }
-        return Buffer.concat(chunks);
-      };
-
-      const audioBuffer = await Promise.race([collectStream(), timeoutPromise]) as Buffer;
-      
-      if (!audioBuffer || audioBuffer.length === 0) {
-        throw new Error("Edge TTS returned empty audio data");
-      }
-
-      res.json({ audioContent: audioBuffer.toString('base64') });
-    } catch (error: any) {
-      console.error("Edge TTS Proxy Error:", error.message || error);
-      if (stream && stream.destroy) stream.destroy(); // Memory leak prevention (Issue 4)
-      res.status(500).json({ error: error.message || "Edge TTS Connection Failed" });
-    }
+  // --- API Routes (MUST be defined BEFORE static files/SPA fallback) ---
+  
+  // TTS 상태 확인 엔드포인트
+  app.get("/api/tts/status", (_req, res) => {
+    console.log("[Status Check] Checking environment variables...");
+    res.json({
+      google_key_set: !!process.env.GOOGLE_CLOUD_API_KEY,
+      openai_key_set: !!process.env.OPENAI_API_KEY,
+      env: process.env.NODE_ENV || "development"
+    });
   });
 
-  // Google Cloud TTS Premium Endpoint (Neural2) - Issue: Premium Quality
+  // Google Cloud TTS Premium Endpoint (Neural2)
   app.post("/api/tts/google", async (req, res) => {
     const { characterName, text } = req.body;
     const apiKey = process.env.GOOGLE_CLOUD_API_KEY;
@@ -143,15 +51,15 @@ async function startServer() {
       let speakingRate = 1.05;
 
       if (characterName === '호백') {
-        voiceName = 'ko-KR-Neural2-C'; // Male
+        voiceName = 'ko-KR-Neural2-C'; // Male, deep
         pitch = -2.0;
       } else if (characterName === '갓도령') {
-        voiceName = 'ko-KR-Neural2-B'; 
-        pitch = 2.0;
+        voiceName = 'ko-KR-Neural2-C'; // Male (소년 느낌을 위해 pitch+rate 조정)
+        pitch = 4.0;
         speakingRate = 1.1;
       } else if (characterName === '아라') {
-        voiceName = 'ko-KR-Neural2-A'; 
-        pitch = 3.0; // 발랄한 느낌
+        voiceName = 'ko-KR-Neural2-A'; // Female, warm
+        pitch = 3.0;
       }
 
       console.log(`[Google TTS] Character: ${characterName}, Text: "${text.substring(0, 20)}..."`);
@@ -192,59 +100,7 @@ async function startServer() {
     }
   });
 
-  // Google Gemini TTS Proxy Endpoint (Issue 1)
-  app.post("/api/tts/gemini", async (req, res) => {
-    const { characterName, text } = req.body;
-    const apiKey = process.env.GEMINI_API_KEY;
-
-    if (!apiKey) {
-      return res.status(500).json({ error: "GEMINI_API_KEY missing on server" });
-    }
-
-    try {
-      const ai = new GoogleGenAI({ apiKey });
-      
-      // Voice mapping (matched with geminiService.ts)
-      let voiceName = 'Kore'; 
-      let promptPrefix = "Say cheerfully: ";
-
-      if (characterName === '호백') {
-        voiceName = 'Fenrir';
-        promptPrefix = "Say in a deep, friendly voice: ";
-      } else if (characterName === '갓도령') {
-        voiceName = 'Puck';
-        promptPrefix = "Say in a clear, confident, and youthful boy's voice: ";
-      }
-
-      const response = await ai.models.generateContent({
-        model: "gemini-2.0-flash-exp",
-        contents: [{ parts: [{ text: `${promptPrefix}${text}` }] }],
-        config: {
-          // @ts-ignore
-          responseModalities: ["AUDIO"],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName },
-            },
-          },
-        },
-      });
-
-      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-
-      if (base64Audio) {
-        const wavAudio = pcmToWavBase64(base64Audio, 24000);
-        res.json({ audioContent: wavAudio });
-      } else {
-        throw new Error("Gemini TTS returned no audio data");
-      }
-    } catch (error: any) {
-      console.error("Gemini TTS Proxy Error:", error.message || error);
-      res.status(500).json({ error: error.message || "Gemini TTS Failed" });
-    }
-  });
-
-  // Cloudinary Image Upload Endpoint (Supabase Alternative)
+  // Cloudinary Image Upload Endpoint
   app.post("/api/upload", async (req, res) => {
     const { image } = req.body; // base64 image data
     

@@ -32,28 +32,30 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
   const animationRef = useRef<number | null>(null);
 
   const isSpeakingRef = useRef(false);
+  const isListeningRef = useRef(false);
   const detectedActivityRef = useRef(detectedActivity);
   const initializedCharacter = useRef<string | null>(null);
+  const handleUserMessageRef = useRef<(text: string) => void>(() => {});
 
-  // Issue 2, 9: Unified recognition start logic to prevent race conditions & duplication
+  // startRecognition은 ref만 사용해서 deps를 [] 로 고정 - audio useEffect가 재실행되지 않도록 방지
   const startRecognition = useCallback(() => {
-    if (!recognitionRef.current || isSpeakingRef.current || isListening || detectedActivityRef.current !== 'none') {
-      console.log("Recognition start skipped: speaking/listening/activity_detected");
+    if (!recognitionRef.current || isSpeakingRef.current || isListeningRef.current || detectedActivityRef.current !== 'none') {
       return;
     }
-    
     try {
-      console.log("Starting voice recognition...");
       recognitionRef.current.start();
     } catch (e) {
-      // Ignore if already started
-      console.log("Recognition already running or failed to start", e);
+      // already running
     }
-  }, [isListening]);
+  }, []);
 
   useEffect(() => {
     isSpeakingRef.current = isSpeaking;
   }, [isSpeaking]);
+
+  useEffect(() => {
+    isListeningRef.current = isListening;
+  }, [isListening]);
 
   useEffect(() => {
     detectedActivityRef.current = detectedActivity;
@@ -67,6 +69,7 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
+    isSpeakingRef.current = false; // ref 즉시 업데이트 (startRecognition 가드 해제)
     setIsSpeaking(false);
   }, []);
 
@@ -154,7 +157,12 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
     initGreeting();
   }, [character, startRecognition]);
 
-  // Recognition setup
+  // handleUserMessageRef 항상 최신 함수를 가리키도록 동기화 (stale closure 방지)
+  useEffect(() => {
+    handleUserMessageRef.current = handleUserMessage;
+  });
+
+  // Recognition setup (한 번만 실행, onresult는 ref를 통해 최신 핸들러 호출)
   useEffect(() => {
     // @ts-ignore
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -167,13 +175,19 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
       recognition.onstart = () => setIsListening(true);
       recognition.onresult = (event: any) => {
         const transcript = event.results[0][0].transcript;
-        handleUserMessage(transcript);
+        handleUserMessageRef.current(transcript);
       };
       recognition.onerror = (event: any) => {
         console.error("Recognition error:", event.error);
         setIsListening(false);
+        // 네트워크/임시 오류면 자동 재시도
+        if (event.error === 'network' || event.error === 'audio-capture') {
+          setTimeout(() => startRecognition(), 1500);
+        }
       };
-      recognition.onend = () => setIsListening(false);
+      recognition.onend = () => {
+        setIsListening(false);
+      };
       recognitionRef.current = recognition;
     }
 
@@ -279,8 +293,13 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
   };
 
   const toggleListening = () => {
-    if (isListening) recognitionRef.current?.stop();
-    else startRecognition();
+    if (isListening) {
+      recognitionRef.current?.stop();
+    } else {
+      // 오디오 재생 중이어도 버튼 누르면 즉시 중단하고 마이크 시작
+      stopAllAudio();
+      startRecognition();
+    }
   };
 
   const latestAiMessage = [...messages].reverse().find(m => m.role === 'ai')?.text || '';
