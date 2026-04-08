@@ -63,31 +63,35 @@ async function startServer() {
 
       console.log(`[Gemini TTS] Character: ${characterName}, Voice: ${voiceName}, Text: "${text.substring(0, 20)}..."`);
 
-      // @ts-ignore
-      const { createClient } = await import("@google/genai");
-      const client = createClient({ apiKey: apiKey, platform: "google_ai" });
-
-      const response = await client.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: [{ role: "user", parts: [{ text: `${promptPrefix}${text}` }] }],
-        config: {
-          // @ts-ignore
-          responseModalities: ["AUDIO"],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName },
-            },
-          },
-        },
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: `${promptPrefix}${text}` }] }],
+          generationConfig: {
+            responseModalities: ["AUDIO"],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName }
+              }
+            }
+          }
+        })
       });
 
-      const audioBase64 = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error?.message || `Gemini API Request Failed (${response.status})`);
+      }
+
+      const data: any = await response.json();
+      const audioBase64 = data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
 
       if (audioBase64) {
         console.log("[Gemini TTS] Success - Generative Audio received");
         res.json({ audioContent: audioBase64 });
       } else {
-        throw new Error("Gemini AI returned no audio data");
+        throw new Error("Gemini AI returned no audio data field");
       }
     } catch (error: any) {
       console.error("[Gemini TTS] Error:", error.message || error);
