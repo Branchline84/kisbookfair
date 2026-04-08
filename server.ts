@@ -61,8 +61,6 @@ async function startServer() {
         promptPrefix = "밝고 상냥한 소녀의 목소리로 말해줘: ";
       }
 
-      console.log(`[Gemini TTS Attempt] voice: ${voiceName}`);
-
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -79,28 +77,39 @@ async function startServer() {
         })
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        console.error("[Gemini API Error Response]:", JSON.stringify(errorData));
-        return res.status(response.status).json({ 
-          error: "Gemini API Failed", 
-          status: response.status,
-          details: errorData 
-        });
+      if (response.ok) {
+        const data: any = await response.json();
+        const audioBase64 = data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        if (audioBase64) {
+          return res.json({ audioContent: audioBase64 });
+        }
       }
-
-      const data: any = await response.json();
-      const audioBase64 = data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
       
-      if (audioBase64) {
-        console.log("[Gemini TTS] Success");
-        res.json({ audioContent: audioBase64 });
+      // --- Fallback to Standard Google TTS ---
+      console.warn("[TTS Fallback] Gemini blocked or failed, using standard...");
+      let standardVoice = 'ko-KR-Neural2-A';
+      if (characterName === '호백') standardVoice = 'ko-KR-Neural2-C';
+      else if (characterName === '갓도령') standardVoice = 'ko-KR-Neural2-B';
+
+      const stdTtsResponse = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input: { text },
+          voice: { languageCode: 'ko-KR', name: standardVoice },
+          audioConfig: { audioEncoding: 'MP3', pitch: 0, speakingRate: 1.05 }
+        })
+      });
+
+      const stdData: any = await stdTtsResponse.json();
+      if (stdData.audioContent) {
+        res.json({ audioContent: stdData.audioContent });
       } else {
-        res.status(500).json({ error: "Gemini returned no audio data", raw: data });
+        throw new Error("All TTS engines blocked or failed");
       }
     } catch (error: any) {
       console.error("[TTS Final Error]:", error.message);
-      res.status(500).json({ error: error.message });
+      res.status(500).json({ error: "음성 생성 실패" });
     }
   });
 
