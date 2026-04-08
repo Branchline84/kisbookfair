@@ -33,6 +33,13 @@ export function ActivitySelect({ character, onSelect }: ActivitySelectProps) {
       const transcript = event.results[0][0].transcript;
       setIsListening(false);
       
+      const isNegative = transcript.includes('안') || transcript.includes('아니') || transcript.includes('싫어') || transcript.includes('못');
+      
+      if (isNegative) {
+        alert(`"${transcript}"라고 들었어요. 하고 싶은 활동을 다시 말씀해 주세요!`);
+        return;
+      }
+
       if (transcript.includes('사진') || transcript.includes('찍')) {
         onSelect('photo');
       } else if (transcript.includes('칠보') || transcript.includes('공예')) {

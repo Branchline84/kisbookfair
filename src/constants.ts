@@ -32,3 +32,12 @@ export const CHARACTERS: Character[] = [
     fallbackImage: '/hobaek.png',
   },
 ];
+
+// Issue 10: Centralized Timeouts
+export const TIMEOUTS = {
+  TTS_RESPONSE: 12000,
+  CHAT_RESPONSE: 30000,
+  GREETING_INIT: 15000,
+  CACHE_WAIT: 5000,
+  FAREWELL_SCREEN: 7000,
+} as const;

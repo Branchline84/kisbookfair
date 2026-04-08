@@ -1,10 +1,11 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { motion } from 'motion/react';
 import { Mic, MicOff, RotateCcw, ArrowRight, Volume2 } from 'lucide-react';
 import { Character } from '../types';
 import { generateAudio, generateChatResponse, getCachedGreetingAudio } from '../services/geminiService';
 import { CharacterMedia } from './CharacterMedia';
 import { VoiceVisualizer } from './VoiceVisualizer';
+import { TIMEOUTS } from '../constants';
 
 interface ConversationProps {
   character: Character;
@@ -22,6 +23,7 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
   const [detectedActivity, setDetectedActivity] = useState<'photo' | 'craft' | 'tshirt' | 'none'>('none');
   const [quotaExceeded, setQuotaExceeded] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const recognitionRef = useRef<any>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -29,89 +31,93 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
   const streamRef = useRef<MediaStream | null>(null);
   const animationRef = useRef<number | null>(null);
 
-  // Refs for latest state to avoid re-triggering audio playback
-  const isListeningRef = useRef(isListening);
+  const isSpeakingRef = useRef(false);
   const detectedActivityRef = useRef(detectedActivity);
   const initializedCharacter = useRef<string | null>(null);
 
-  useEffect(() => {
-    isListeningRef.current = isListening;
+  // Issue 2, 9: Unified recognition start logic to prevent race conditions & duplication
+  const startRecognition = useCallback(() => {
+    if (!recognitionRef.current || isSpeakingRef.current || isListening || detectedActivityRef.current !== 'none') {
+      console.log("Recognition start skipped: speaking/listening/activity_detected");
+      return;
+    }
+    
+    try {
+      console.log("Starting voice recognition...");
+      recognitionRef.current.start();
+    } catch (e) {
+      // Ignore if already started
+      console.log("Recognition already running or failed to start", e);
+    }
   }, [isListening]);
+
+  useEffect(() => {
+    isSpeakingRef.current = isSpeaking;
+  }, [isSpeaking]);
 
   useEffect(() => {
     detectedActivityRef.current = detectedActivity;
   }, [detectedActivity]);
 
-  // Auto-play audio when audioBase64 changes
+  const stopAllAudio = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    setIsSpeaking(false);
+  }, []);
+
+  // Issue 2, 5: Audio playback logic with better state management
   useEffect(() => {
     if (audioBase64) {
-      console.log("Audio data received, length:", audioBase64.length);
-      // Cancel any native speech synthesis if we have real audio
-      if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-      }
+      stopAllAudio();
       
       const audioUrl = audioBase64.startsWith('data:') ? audioBase64 : `data:audio/wav;base64,${audioBase64}`;
       const audio = new Audio(audioUrl);
       audioRef.current = audio;
       
       const playAudio = async () => {
-        console.log("Attempting to play audio...");
         try {
-          // Set speaking to true as soon as we attempt to play
-          // This ensures the video animation starts even if there's a tiny buffer delay
           setIsSpeaking(true);
           await audio.play();
-          console.log("Audio started playing successfully");
         } catch (e: any) {
-          if (e.name === 'AbortError') {
-            console.log("Audio playback interrupted by pause (expected during cleanup)");
-            return;
-          }
-          console.error("Audio playback failed:", e);
           setIsSpeaking(false);
-          // If auto-play failed, try native fallback as last resort
-          if (messages.length > 0 && messages[messages.length - 1].role === 'ai') {
-            console.log("Falling back to native speech due to playback failure");
-            speakNativeFallback(messages[messages.length - 1].text);
+          if (e.name !== 'AbortError') {
+            console.error("Audio playback failed, falling back to native TTS:", e);
+            if (messages.length > 0 && messages[messages.length - 1].role === 'ai') {
+              speakNativeFallback(messages[messages.length - 1].text);
+            }
           }
         }
       };
 
       audio.onended = () => {
-        console.log("Audio playback ended");
         setIsSpeaking(false);
-        // Auto-start listening after AI finishes speaking, only if no activity detected
-        if (recognitionRef.current && !isListeningRef.current && detectedActivityRef.current === 'none') {
-          try {
-            console.log("Auto-starting recognition...");
-            recognitionRef.current.start();
-          } catch (e) {
-            console.error("Could not auto-start mic", e);
-          }
-        }
+        startRecognition();
       };
 
-      audio.onerror = (e) => {
-        console.error("Audio object error event:", e);
+      audio.onerror = () => {
         setIsSpeaking(false);
+        console.error("Audio stream error");
       };
 
       playAudio();
     }
     return () => {
       if (audioRef.current) {
-        console.log("Cleaning up audio object");
         audioRef.current.pause();
         audioRef.current = null;
         setIsSpeaking(false);
       }
     };
-  }, [audioBase64]);
+  }, [audioBase64, startRecognition]);
 
-  const speakNativeFallback = (text: string) => {
+  const speakNativeFallback = useCallback((text: string) => {
     if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel(); // Clear queue to prevent repeating
+      window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = 'ko-KR';
       utterance.rate = 1.1;
@@ -123,28 +129,16 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
       utterance.onstart = () => setIsSpeaking(true);
       utterance.onend = () => {
         setIsSpeaking(false);
-        if (recognitionRef.current && !isListeningRef.current && detectedActivityRef.current === 'none') {
-          try {
-            recognitionRef.current.start();
-          } catch (e) {
-            console.error("Could not auto-start mic (fallback)");
-          }
-        }
+        startRecognition();
       };
+      utterance.onerror = () => setIsSpeaking(false);
 
       window.speechSynthesis.speak(utterance);
     } else {
-      setTimeout(() => {
-        if (recognitionRef.current && !isListeningRef.current && detectedActivityRef.current === 'none') {
-          try {
-            recognitionRef.current.start();
-          } catch (e) {
-            console.error("Could not auto-start mic (fallback)");
-          }
-        }
-      }, 3000);
+      // Hard fallback if no TTS at all
+      setTimeout(startRecognition, 3000);
     }
-  };
+  }, [startRecognition]);
 
   // Initial greeting
   useEffect(() => {
@@ -152,50 +146,33 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
     initializedCharacter.current = character.name;
 
     const initGreeting = async () => {
-      console.log("Initializing greeting for", character.name);
       setIsProcessing(true);
       const greeting = `안녕? 나는 ${character.name}야. 만나서 반가워~ 넌 이름이 뭐야?`;
       setMessages([{ role: 'ai', text: greeting }]);
       
       let audio: string | null = null;
-      
-      // Safety timeout for the entire initialization process
-      const timeoutId = setTimeout(() => {
-        console.warn("Greeting initialization timed out, clearing processing state.");
-        setIsProcessing(false);
-      }, 12000);
+      const timeoutId = setTimeout(() => setIsProcessing(false), TIMEOUTS.GREETING_INIT);
 
       try {
-        console.log("Fetching greeting audio...");
-        // Use a race to prevent hanging on cached promise
         const audioPromise = getCachedGreetingAudio(character.name).then(async (cached) => {
           if (cached) return cached;
           return await generateAudio(character.name, greeting);
         });
-
         audio = await audioPromise;
-        console.log("Greeting audio fetch result:", audio ? "Success (length: " + audio.length + ")" : "Failed");
       } catch (error: any) {
         console.error("Greeting audio error:", error);
-        if (error.message === 'QUOTA_EXCEEDED') {
-          setQuotaExceeded(true);
-        }
       } finally {
         clearTimeout(timeoutId);
         setIsProcessing(false);
       }
       
-      if (audio) {
-        console.log("Setting audioBase64...");
-        setAudioBase64(audio);
-      } else {
-        console.warn("Greeting audio generation failed, using native fallback.");
-        speakNativeFallback(greeting);
-      }
+      if (audio) setAudioBase64(audio);
+      else speakNativeFallback(greeting);
     };
     initGreeting();
-  }, [character]);
+  }, [character, speakNativeFallback]);
 
+  // Recognition setup
   useEffect(() => {
     // @ts-ignore
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -205,51 +182,30 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
       recognition.continuous = false;
       recognition.interimResults = false;
 
-      recognition.onstart = () => {
-        setIsListening(true);
-      };
-
+      recognition.onstart = () => setIsListening(true);
       recognition.onresult = (event: any) => {
         const transcript = event.results[0][0].transcript;
         handleUserMessage(transcript);
       };
-
       recognition.onerror = (event: any) => {
-        console.error("Speech recognition error:", event.error);
-        setIsListening(false);
-        
-        if (event.error === 'not-allowed') {
-          alert("마이크 권한이 필요해요! 브라우저 주소창 옆의 마이크 아이콘을 눌러 권한을 허용해주세요.");
-        } else if (event.error === 'no-speech') {
-          // Silent error
-        } else if (event.error === 'network') {
-          alert("네트워크 연결이 불안정해요. 인터넷 연결을 확인해주세요.");
-        }
-      };
-
-      recognition.onend = () => {
+        console.error("Recognition error:", event.error);
         setIsListening(false);
       };
-
+      recognition.onend = () => setIsListening(false);
       recognitionRef.current = recognition;
     }
 
     return () => {
       if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch (e) {}
+        try { recognitionRef.current.stop(); } catch (e) {}
       }
     };
   }, []);
 
   // Audio analysis for Waveform
   useEffect(() => {
-    if (isListening) {
-      startAudioAnalysis();
-    } else {
-      stopAudioAnalysis();
-    }
+    if (isListening) startAudioAnalysis();
+    else stopAudioAnalysis();
     return () => stopAudioAnalysis();
   }, [isListening]);
 
@@ -257,63 +213,39 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      const audioCtx = new AudioContextClass();
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
       
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      if (audioCtx.state === 'suspended') {
-        await audioCtx.resume();
-      }
       const analyser = audioCtx.createAnalyser();
       const source = audioCtx.createMediaStreamSource(stream);
-      
       source.connect(analyser);
-      analyser.fftSize = 128; // Increased for slightly more detail
+      analyser.fftSize = 128;
       
       audioCtxRef.current = audioCtx;
       analyserRef.current = analyser;
-      
-      const bufferLength = analyser.frequencyBinCount;
-      const dataArray = new Uint8Array(bufferLength);
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
       
       const updateLevel = () => {
         if (!analyserRef.current) return;
         analyserRef.current.getByteFrequencyData(dataArray);
-        
-        // Calculate average level focused on human speech frequencies
         let sum = 0;
-        // Use a subset of bins that correspond more to speech
-        for (let i = 2; i < 15; i++) {
-          sum += dataArray[i];
-        }
-        const average = sum / 13;
-        // Boost the signal for better visual feedback
-        const boosted = Math.pow(average / 128, 0.5) * 100;
-        
-        // Normalize and damp the level for smoother animation
+        for (let i = 2; i < 15; i++) sum += dataArray[i];
+        const boosted = Math.pow((sum / 13) / 128, 0.5) * 100;
         setAudioLevel(prev => (prev * 0.4) + (boosted * 0.6));
-        
         animationRef.current = requestAnimationFrame(updateLevel);
       };
-      
       updateLevel();
     } catch (err) {
-      console.error("Error accessing microphone for visualizer:", err);
+      console.error("Mic analysis error:", err);
     }
   };
 
   const stopAudioAnalysis = () => {
-    if (animationRef.current) {
-      cancelAnimationFrame(animationRef.current);
-      animationRef.current = null;
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-    }
-    if (audioCtxRef.current) {
-      audioCtxRef.current.close().catch(() => {});
-      audioCtxRef.current = null;
-    }
-    analyserRef.current = null;
+    if (animationRef.current) cancelAnimationFrame(animationRef.current);
+    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+    if (audioCtxRef.current) audioCtxRef.current.close().catch(() => {});
+    animationRef.current = null; streamRef.current = null; audioCtxRef.current = null; analyserRef.current = null;
     setAudioLevel(0);
   };
 
@@ -325,30 +257,14 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
     
     try {
       const aiResponse = await generateChatResponse(character.name, character.personality, messages, text);
-      let audio: string | null = null;
-      try {
-        audio = await generateAudio(character.name, aiResponse.text);
-      } catch (error: any) {
-        if (error.message === 'QUOTA_EXCEEDED') {
-          setQuotaExceeded(true);
-        }
-      }
+      let audio = await generateAudio(character.name, aiResponse.text);
       
       setMessages([...newMessages, { role: 'ai' as const, text: aiResponse.text }]);
       setDetectedActivity(aiResponse.detectedActivity);
       
-      if (audio) {
-        setAudioBase64(audio);
-      } else {
-        console.warn("Gemini TTS generation failed for chat response, using native fallback.");
-        speakNativeFallback(aiResponse.text);
-      }
+      if (audio) setAudioBase64(audio);
+      else speakNativeFallback(aiResponse.text);
     } catch (e: any) {
-      if (e.message === 'QUOTA_EXCEEDED') {
-        setQuotaExceeded(true);
-      } else {
-        console.error("Chat error", e);
-      }
       const fallbackText = "미안해, 지금은 귀가 잘 안 들려. 다시 말해줄래?";
       setMessages([...newMessages, { role: 'ai' as const, text: fallbackText }]);
       speakNativeFallback(fallbackText);
@@ -358,190 +274,91 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
   };
 
   const toggleListening = () => {
-    if (isListening) {
-      recognitionRef.current?.stop();
-    } else {
-      recognitionRef.current?.start();
-    }
+    if (isListening) recognitionRef.current?.stop();
+    else startRecognition();
   };
 
   const latestAiMessage = [...messages].reverse().find(m => m.role === 'ai')?.text || '';
 
   return (
     <motion.div 
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
       className="w-full h-full flex flex-col bg-white overflow-hidden relative"
     >
       {quotaExceeded && (
-        <div className="absolute top-0 left-0 w-full bg-orange-500 text-white text-center py-2 z-50 font-medium text-sm shadow-md flex items-center justify-center gap-4">
-          <span>⚠️ AI 음성 생성 무료 사용량(할당량)이 초과되어 임시 기계음으로 대체됩니다.</span>
-          <button 
-            onClick={() => setQuotaExceeded(false)} 
-            className="bg-white text-orange-500 px-3 py-1 rounded-full text-xs font-bold hover:bg-orange-50 transition-colors"
-          >
-            다시 시도
-          </button>
+        <div className="absolute top-0 left-0 w-full bg-orange-500 text-white text-center py-2 z-50 font-medium text-sm flex items-center justify-center gap-4">
+          <span>⚠️ 할당량 초과로 임시 음성을 사용합니다.</span>
+          <button onClick={() => setQuotaExceeded(false)} className="bg-white text-orange-500 px-3 py-1 rounded-full text-xs font-bold">다시 시도</button>
         </div>
       )}
 
-      {/* Character Area (Top) - Fixed height to stabilize layout */}
+      {/* Character Area */}
       <div className="h-[55vh] min-h-[450px] relative flex items-end justify-center p-4 bg-gradient-to-b from-slate-50 to-white overflow-hidden shrink-0">
-        <div className="w-full h-full relative z-10">
-          <CharacterMedia 
-            src={character.image}
-            idleSrc={character.idleImage}
-            isSpeaking={isSpeaking}
-            mood={isProcessing ? 'thinking' : detectedActivity !== 'none' ? 'excited' : 'neutral'}
-            className="w-full h-full"
-          />
-        </div>
-
-        {/* Improved Visualizer Overlay behind or around the character */}
+        <CharacterMedia 
+          src={character.image} idleSrc={character.idleImage} isSpeaking={isSpeaking}
+          mood={isProcessing ? 'thinking' : detectedActivity !== 'none' ? 'excited' : 'neutral'}
+          className="w-full h-full z-10"
+        />
         <div className="absolute inset-0 z-0 opacity-40">
-           <VoiceVisualizer 
-             isListening={isListening} 
-             isSpeaking={isSpeaking} 
-             isProcessing={isProcessing} 
-             audioLevel={audioLevel}
-             analyser={analyserRef.current}
-           />
+           <VoiceVisualizer isListening={isListening} isSpeaking={isSpeaking} isProcessing={isProcessing} audioLevel={audioLevel} analyser={analyserRef.current} />
         </div>
-        
-        {/* Background decorative elements for kiosk feel */}
-        <div className="absolute top-20 left-10 w-32 h-32 bg-indigo-100 rounded-full blur-3xl opacity-60"></div>
-        <div className="absolute bottom-40 right-10 w-48 h-48 bg-emerald-100 rounded-full blur-3xl opacity-60"></div>
       </div>
 
-      {/* Text & Interaction Area (Bottom) - Takes the remaining space */}
-      <div className="flex-1 bg-white p-8 pt-10 flex flex-col gap-6 z-20 overflow-y-auto">
-        <div className="w-full relative mt-2">
+      {/* Text & Interaction Area */}
+      <div className="flex-1 bg-white p-6 flex flex-col gap-4 z-20 overflow-y-auto">
+        <div className="w-full relative">
           {isProcessing ? (
-            <div className="flex flex-col items-center justify-center py-10 gap-4 bg-slate-50 rounded-3xl border-2 border-dashed border-indigo-100">
+            <div className="flex flex-col items-center justify-center py-8 gap-3 bg-slate-50 rounded-3xl border-2 border-dashed border-indigo-100">
               <div className="flex gap-2">
-                <div className="w-3 h-3 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                <div className="w-3 h-3 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                <div className="w-3 h-3 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
               </div>
-              <p className="text-indigo-600 font-bold">{character.name}가 생각 중이에요...</p>
+              <p className="text-indigo-600 font-bold text-sm">{character.name}가 생각 중...</p>
             </div>
           ) : (
-            <div className="bg-indigo-50/50 rounded-3xl p-8 relative shadow-inner border border-indigo-100/50">
-              <div className="absolute -top-4 left-10 bg-indigo-600 text-white text-xs font-bold px-3 py-1 rounded-full shadow-md">
-                {character.name}
-              </div>
-              <p className="text-xl md:text-2xl leading-relaxed text-slate-800 font-semibold whitespace-pre-wrap text-center relative pr-10">
+            <div className="bg-indigo-50/50 rounded-3xl p-6 relative border border-indigo-100/50">
+              <div className="absolute -top-3 left-6 bg-indigo-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-md">{character.name}</div>
+              <p className="text-xl leading-relaxed text-slate-800 font-semibold text-center whitespace-pre-wrap">
                 {latestAiMessage}
                 {!isSpeaking && !isProcessing && latestAiMessage && (
-                  <button 
-                    onClick={() => {
-                      console.log("Manual replay requested for:", latestAiMessage);
-                      generateAudio(character.name, latestAiMessage)
-                        .then(audio => {
-                          if (audio) setAudioBase64(audio);
-                          else speakNativeFallback(latestAiMessage);
-                        })
-                        .catch(err => {
-                          if (err.message === 'QUOTA_EXCEEDED') setQuotaExceeded(true);
-                          speakNativeFallback(latestAiMessage);
-                        });
-                    }}
-                    className="absolute right-0 top-1/2 -translate-y-1/2 p-2 text-indigo-500 hover:text-indigo-700 transition-colors bg-white rounded-full shadow-sm"
-                    title="다시 듣기"
-                  >
-                    <Volume2 size={24} />
-                  </button>
+                  <button onClick={() => generateAudio(character.name, latestAiMessage).then(a => a ? setAudioBase64(a) : speakNativeFallback(latestAiMessage))} className="inline-block ml-2 p-1.5 text-indigo-500 bg-white rounded-full shadow-sm align-middle"><Volume2 size={18} /></button>
                 )}
               </p>
             </div>
           )}
         </div>
 
-        <div className="w-full flex flex-col items-center gap-6">
+        <div className="w-full flex flex-col items-center gap-4">
           {detectedActivity !== 'none' && !isProcessing ? (
-            <div className="w-full flex flex-col gap-3">
+            <div className="w-full flex flex-col gap-2">
               <button 
-                onClick={() => {
-                  if (audioRef.current) audioRef.current.pause();
-                  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
-                  onActivitySelect(detectedActivity);
-                }}
-                className="w-full py-6 rounded-2xl font-bold text-2xl text-white bg-indigo-600 hover:bg-indigo-700 transition-all flex items-center justify-center gap-3 shadow-lg active:scale-95"
+                onClick={() => { stopAllAudio(); onActivitySelect(detectedActivity); }}
+                className="w-full py-5 rounded-2xl font-bold text-xl text-white bg-indigo-600 hover:bg-indigo-700 flex items-center justify-center gap-2 shadow-lg"
               >
-                {detectedActivity === 'photo' ? '사진 찍으러 가기' : detectedActivity === 'craft' ? '칠보공예 하러 가기' : '티셔츠 만들러 가기'} <ArrowRight size={28} />
+                {detectedActivity === 'photo' ? '사진 찍으러 가기' : detectedActivity === 'craft' ? '칠보공예 하러 가기' : '티셔츠 만들러 가기'} <ArrowRight size={24} />
               </button>
-              <button 
-                onClick={() => {
-                  setDetectedActivity('none');
-                  toggleListening();
-                }}
-                className="w-full py-4 rounded-2xl font-bold text-lg text-slate-500 bg-slate-100 hover:bg-slate-200 transition-colors flex items-center justify-center gap-2"
-              >
-                <RotateCcw size={20} /> 다시 대답하기
-              </button>
+              <button onClick={() => { setDetectedActivity('none'); startRecognition(); }} className="w-full py-3 rounded-xl font-bold text-slate-500 bg-slate-100 flex items-center justify-center gap-2"><RotateCcw size={18} /> 다시 말하기</button>
             </div>
           ) : (
-            <div className="flex flex-col items-center gap-6 w-full">
-              <div className="flex flex-col items-center gap-2">
-                <p className="text-slate-500 font-bold text-lg">
-                  {isListening ? "듣고 있어요! 말씀해주세요" : "버튼을 누르고 대답해주세요"}
-                </p>
-              </div>
-              
-              <div className="flex items-center justify-center relative w-full h-32">
-                {/* Secondary Visualizer around the mic button */}
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="w-64 h-64">
-                    <VoiceVisualizer 
-                      isListening={isListening} 
-                      isSpeaking={isSpeaking} 
-                      isProcessing={isProcessing} 
-                      audioLevel={audioLevel}
-                    />
-                  </div>
-                </div>
-
-                <div className="relative">
-                  <button 
-                    onClick={toggleListening}
-                    disabled={isProcessing}
-                    className={`relative z-10 w-24 h-24 rounded-full flex items-center justify-center shadow-2xl transition-all active:scale-90 ${
-                      isListening 
-                        ? 'bg-red-500 text-white' 
-                        : 'bg-indigo-600 text-white hover:bg-indigo-700'
-                    } ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  >
-                    {isListening ? <MicOff size={44} /> : <Mic size={44} />}
-                  </button>
-                </div>
-              </div>
-
-              {!isListening && !isProcessing && (
-                <div className="flex flex-wrap justify-center gap-2">
-                  <button 
-                    onClick={() => handleUserMessage("사진 찍을래!")}
-                    className="text-sm bg-indigo-50 text-indigo-600 px-4 py-2 rounded-full hover:bg-indigo-100 transition-colors font-medium border border-indigo-100"
-                  >
-                    "사진 찍을래!"
-                  </button>
-                  <button 
-                    onClick={() => handleUserMessage("칠보공예 할래!")}
-                    className="text-sm bg-indigo-50 text-indigo-600 px-4 py-2 rounded-full hover:bg-indigo-100 transition-colors font-medium border border-indigo-100"
-                  >
-                    "칠보공예 할래!"
-                  </button>
-                </div>
-              )}
-
-              <div className="w-full flex justify-end">
+            <div className="flex flex-col items-center gap-4 w-full">
+              <p className="text-slate-500 font-bold text-sm">{isListening ? "듣고 있어요! 말씀해주세요" : "버튼을 누르고 대답해주세요"}</p>
+              <div className="relative flex items-center justify-center h-24 w-full">
+                <div className="absolute w-48 h-48 opacity-50"><VoiceVisualizer isListening={isListening} isSpeaking={isSpeaking} isProcessing={isProcessing} audioLevel={audioLevel} /></div>
                 <button 
-                  onClick={() => onActivitySelect('manual')}
-                  className="py-2 px-6 rounded-full font-bold text-slate-400 bg-slate-50 hover:bg-slate-100 transition-colors flex items-center gap-2 text-sm"
+                  onClick={toggleListening} disabled={isProcessing}
+                  className={`relative z-10 w-20 h-20 rounded-full flex items-center justify-center shadow-2xl transition-all active:scale-90 ${isListening ? 'bg-red-500 text-white' : 'bg-indigo-600 text-white'} ${isProcessing ? 'opacity-50' : ''}`}
                 >
-                  직접 선택하기 <ArrowRight size={16} />
+                  {isListening ? <MicOff size={36} /> : <Mic size={36} />}
                 </button>
               </div>
+              {!isListening && !isProcessing && (
+                <div className="flex flex-wrap justify-center gap-2">
+                  <button onClick={() => handleUserMessage("사진 찍을래!")} className="text-xs bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-full border border-indigo-100 font-medium">"사진 찍을래!"</button>
+                  <button onClick={() => handleUserMessage("칠보공예 할래!")} className="text-xs bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-full border border-indigo-100 font-medium">"칠보공예 할래!"</button>
+                </div>
+              )}
+              <div className="w-full flex justify-end"><button onClick={() => onActivitySelect('manual')} className="py-1.5 px-4 rounded-full font-bold text-slate-400 bg-slate-50 text-xs flex items-center gap-1">직접 선택하기 <ArrowRight size={14} /></button></div>
             </div>
           )}
         </div>

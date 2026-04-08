@@ -9,6 +9,41 @@ import { FarewellCraft, FarewellPhoto } from './components/Farewell';
 import { PhotoBooth } from './components/PhotoBooth';
 import { PhotoReview } from './components/PhotoReview';
 import { prefetchGreetingAudio } from './services/geminiService';
+import { TIMEOUTS } from './constants';
+
+// Error Boundary (Issue 8)
+class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean}> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error("App Crash:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="h-screen w-screen flex flex-col items-center justify-center bg-slate-50 p-10 text-center">
+          <h1 className="text-4xl font-bold text-slate-800 mb-4">어머나! 문제가 생겼어요 😅</h1>
+          <p className="text-xl text-slate-600 mb-8">잠시 후 다시 시작될 거예요.</p>
+          <button 
+            onClick={() => window.location.reload()} 
+            className="px-8 py-4 bg-indigo-600 text-white rounded-full font-bold shadow-lg"
+          >
+            다시 시작하기
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export default function App() {
   const [appState, setAppState] = useState<AppState>('SELECT_CHARACTER');
@@ -46,15 +81,15 @@ export default function App() {
       // Show farewell screen for 7 seconds (allow time to read) then reset
       setTimeout(() => {
         resetApp();
-      }, 7000);
+      }, TIMEOUTS.FAREWELL_SCREEN);
     }
   };
 
   return (
-    <div className="kiosk-wrapper">
-      <div className="kiosk-container text-slate-800 font-sans">
+    <ErrorBoundary>
+      <div className="w-full h-full max-w-[600px] mx-auto bg-white shadow-2xl overflow-hidden relative border-x border-slate-100 min-h-screen flex flex-col">
         {/* Header */}
-        <header className="bg-white shadow-sm p-4 flex items-center justify-between z-50 relative border-b border-slate-100">
+        <header className="bg-white shadow-sm p-4 flex items-center justify-between z-50 relative border-b border-slate-100 h-16 shrink-0">
           <div className="flex items-center gap-4">
             {appState !== 'SELECT_CHARACTER' && (
               <button 
@@ -67,10 +102,10 @@ export default function App() {
             )}
             <div className="flex items-center gap-2">
               <Sparkles className="text-indigo-500" size={20} />
-              <h1 className="text-lg font-bold text-slate-800">사단법인 한국소공인협회</h1>
+              <h1 className="text-lg font-bold text-slate-800 line-clamp-1">한국소공인협회</h1>
             </div>
           </div>
-          <div className="text-sm font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-full">어린이 책잔치</div>
+          <div className="text-xs font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-full shrink-0">어린이 책잔치</div>
         </header>
 
         {/* Main Content Area */}
@@ -133,6 +168,6 @@ export default function App() {
           </AnimatePresence>
         </main>
       </div>
-    </div>
+    </ErrorBoundary>
   );
 }

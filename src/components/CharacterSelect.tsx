@@ -11,11 +11,6 @@ interface CharacterSelectProps {
 }
 
 export function CharacterSelect({ onSelect }: CharacterSelectProps) {
-  // Prefetching removed to conserve Gemini TTS quota
-  useEffect(() => {
-    // No prefetching for all characters
-  }, []);
-
   return (
     <motion.div 
       initial={{ opacity: 0, y: 20 }}

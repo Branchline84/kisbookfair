@@ -1,62 +1,8 @@
-import { GoogleGenAI, Modality, Type } from "@google/genai";
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
-function writeString(view: DataView, offset: number, string: string) {
-  for (let i = 0; i < string.length; i++) {
-    view.setUint8(offset + i, string.charCodeAt(i));
-  }
-}
-
-function pcmToWavBase64(pcmBase64: string, sampleRate = 24000): string {
-  const binaryString = window.atob(pcmBase64);
-  const pcmLength = binaryString.length;
-  
-  const buffer = new ArrayBuffer(44 + pcmLength);
-  const view = new DataView(buffer);
-  
-  // RIFF chunk
-  writeString(view, 0, 'RIFF');
-  view.setUint32(4, 36 + pcmLength, true);
-  writeString(view, 8, 'WAVE');
-  
-  // fmt sub-chunk
-  writeString(view, 12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true); // PCM format
-  view.setUint16(22, 1, true); // Mono channel
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true); // Byte rate
-  view.setUint16(32, 2, true); // Block align
-  view.setUint16(34, 16, true); // Bits per sample
-  
-  // data sub-chunk
-  writeString(view, 36, 'data');
-  view.setUint32(40, pcmLength, true);
-  
-  // Write PCM data
-  const uint8View = new Uint8Array(buffer);
-  for (let i = 0; i < pcmLength; i++) {
-    uint8View[44 + i] = binaryString.charCodeAt(i);
-  }
-  
-  // Convert to base64
-  let wavBinaryString = '';
-  const chunkSize = 0x8000;
-  for (let i = 0; i < uint8View.length; i += chunkSize) {
-    wavBinaryString += String.fromCharCode.apply(null, Array.from(uint8View.subarray(i, i + chunkSize)));
-  }
-  return window.btoa(wavBinaryString);
-}
-
-const greetingAudioCache: Record<string, Promise<string | null>> = {};
-
 export async function prefetchGreetingAudio(characterName: string, personality: string) {
   if (greetingAudioCache[characterName]) return;
   const greeting = `안녕? 나는 ${characterName}야. 만나서 반가워~ 넌 이름이 뭐야?`;
   console.log(`Prefetching greeting audio for ${characterName}`);
   
-  // Create a promise with a timeout
   const generatePromise = generateAudio(characterName, greeting);
   const timeoutPromise = new Promise<null>((_, reject) => 
     setTimeout(() => reject(new Error("Prefetch Timeout")), 15000)
@@ -73,7 +19,6 @@ export async function prefetchGreetingAudio(characterName: string, personality: 
 export async function getCachedGreetingAudio(characterName: string): Promise<string | null> {
   if (greetingAudioCache[characterName]) {
     try {
-      // Add a small timeout even for cached results to be safe
       const timeoutPromise = new Promise<null>((_, reject) => 
         setTimeout(() => reject(new Error("Cache Wait Timeout")), 5000)
       );
@@ -131,15 +76,16 @@ export async function generateChatResponse(characterName: string, characterPerso
 }
 
 const audioCache = new Map<string, string>();
+const greetingAudioCache: Record<string, Promise<string | null>> = {};
 
-async function generateTTSProxy(characterName: string, text: string): Promise<string | null> {
-  console.log(`Calling Edge TTS Proxy for ${characterName}: "${text.substring(0, 20)}..."`);
+async function generateTTSProxy(characterName: string, text: string, endpoint: string = '/api/tts'): Promise<string | null> {
+  console.log(`Calling TTS Proxy (${endpoint}) for ${characterName}: "${text.substring(0, 20)}..."`);
   
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+  const timeoutId = setTimeout(() => controller.abort(), 12000);
 
   try {
-    const response = await fetch('/api/tts', {
+    const response = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ characterName, text }),
@@ -149,23 +95,20 @@ async function generateTTSProxy(characterName: string, text: string): Promise<st
     clearTimeout(timeoutId);
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      console.warn("Edge TTS Proxy returned error:", response.status, errorData);
+      console.warn(`${endpoint} returned error:`, response.status);
       return null;
     }
 
     const data = await response.json();
     if (data.audioContent) {
-      return `data:audio/mp3;base64,${data.audioContent}`;
+      // Automatic format detection (MP3 or WAV)
+      const mimeType = endpoint.includes('gemini') ? 'audio/wav' : 'audio/mp3';
+      return `data:${mimeType};base64,${data.audioContent}`;
     }
     return null;
   } catch (error: any) {
     clearTimeout(timeoutId);
-    if (error.name === 'AbortError') {
-      console.error("Edge TTS Proxy Timeout (10s)");
-    } else {
-      console.error("Edge TTS Proxy Fetch Error", error);
-    }
+    console.error(`${endpoint} Fetch Error`, error);
     return null;
   }
 }
@@ -176,55 +119,24 @@ export async function generateAudio(characterName: string, text: string): Promis
     return audioCache.get(cacheKey) || null;
   }
 
-  // 1. Try Edge TTS first for FASTER response (Lower Latency)
-  // The user complained about thinking time, and Edge TTS is generally more responsive than Gemini TTS Preview
-  const proxyAudio = await generateTTSProxy(characterName, text);
-  if (proxyAudio) {
-    audioCache.set(cacheKey, proxyAudio);
-    return proxyAudio;
+  // 1. Try Google Cloud TTS first (Premium Quality - Requested Priority 1)
+  let audio = await generateTTSProxy(characterName, text, '/api/tts/google');
+  
+  // 2. Fallback to Edge TTS if Google fails/quota exceeded
+  if (!audio) {
+    console.log("Falling back to Edge TTS...");
+    audio = await generateTTSProxy(characterName, text, '/api/tts');
   }
 
-  // 2. Fallback to Gemini TTS if Edge TTS fails
-  try {
-    console.log(`Generating Gemini TTS fallback for ${characterName}: "${text.substring(0, 20)}..."`);
-    
-    // Map characters to Gemini voices
-    let voiceName = 'Kore'; 
-    let promptPrefix = "Say cheerfully: ";
+  // 3. Last fallback to Gemini TTS Proxy
+  if (!audio) {
+    console.log("Falling back to Gemini TTS...");
+    audio = await generateTTSProxy(characterName, text, '/api/tts/gemini');
+  }
 
-    if (characterName === '호백') {
-      voiceName = 'Fenrir';
-      promptPrefix = "Say in a deep, friendly voice: ";
-    } else if (characterName === '갓도령') {
-      voiceName = 'Puck';
-      promptPrefix = "Say in a clear, confident, and youthful boy's voice: ";
-    } else if (characterName === '아라') {
-      voiceName = 'Kore';
-      promptPrefix = "Say very cheerfully and brightly: ";
-    }
-
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash-preview-tts",
-      contents: [{ parts: [{ text: `${promptPrefix}${text}` }] }],
-      config: {
-        responseModalities: [Modality.AUDIO],
-        speechConfig: {
-          voiceConfig: {
-            prebuiltVoiceConfig: { voiceName },
-          },
-        },
-      },
-    });
-
-    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-    if (base64Audio) {
-      const wavAudio = `data:audio/wav;base64,${pcmToWavBase64(base64Audio, 24000)}`;
-      audioCache.set(cacheKey, wavAudio);
-      return wavAudio;
-    }
-  } catch (error: any) {
-    console.error("Gemini TTS Fallback Error:", error);
+  if (audio) {
+    audioCache.set(cacheKey, audio);
   }
   
-  return null;
+  return audio;
 }
