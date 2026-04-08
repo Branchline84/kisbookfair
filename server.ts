@@ -47,21 +47,21 @@ async function startServer() {
     }
 
     try {
-      let voiceName = 'Aoede'; // Default (Warm Female)
+      let voiceName = 'Aoede'; 
       let promptPrefix = "말하듯이 아주 자연스럽고 다정하게 들려줘: ";
 
       if (characterName === '호백') {
-        voiceName = 'Fenrir'; // Deep Male
+        voiceName = 'Fenrir'; 
         promptPrefix = "듬직하고 친근하며 낮은 목소리로 말해줘: ";
       } else if (characterName === '갓도령') {
-        voiceName = 'Puck'; // Youthful
+        voiceName = 'Puck'; 
         promptPrefix = "발랄하고 자신감 넘치는 소년의 목소리로 말해줘: ";
       } else if (characterName === '아라') {
         voiceName = 'Aoede'; 
         promptPrefix = "밝고 상냥한 소녀의 목소리로 말해줘: ";
       }
 
-      console.log(`[Gemini TTS] Character: ${characterName}, Voice: ${voiceName}, Text: "${text.substring(0, 20)}..."`);
+      console.log(`[Gemini TTS] Requesting voice: ${voiceName}`);
 
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
         method: 'POST',
@@ -79,27 +79,41 @@ async function startServer() {
         })
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error?.message || `Gemini API Request Failed (${response.status})`);
+      if (response.ok) {
+        const data: any = await response.json();
+        const audioBase64 = data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        if (audioBase64) {
+          console.log("[Gemini TTS] Success");
+          return res.json({ audioContent: audioBase64 });
+        }
       }
+      
+      // --- Fallback to Standard Google TTS if Gemini fails ---
+      console.warn("[TTS Fallback] Gemini failed, using standard Google TTS...");
+      
+      let standardVoice = 'ko-KR-Neural2-A';
+      if (characterName === '호백') standardVoice = 'ko-KR-Neural2-C';
+      else if (characterName === '갓도령') standardVoice = 'ko-KR-Neural2-B';
 
-      const data: any = await response.json();
-      const audioBase64 = data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      const stdTtsResponse = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input: { text },
+          voice: { languageCode: 'ko-KR', name: standardVoice },
+          audioConfig: { audioEncoding: 'MP3', pitch: 0, speakingRate: 1.05 }
+        })
+      });
 
-      if (audioBase64) {
-        console.log("[Gemini TTS] Success - Generative Audio received");
-        res.json({ audioContent: audioBase64 });
+      const stdData: any = await stdTtsResponse.json();
+      if (stdData.audioContent) {
+        res.json({ audioContent: stdData.audioContent });
       } else {
-        throw new Error("Gemini AI returned no audio data field");
+        throw new Error("All TTS engines failed");
       }
     } catch (error: any) {
-      console.error("[Gemini TTS] Error:", error.message || error);
-      res.status(500).json({ 
-        error: error.message || "Gemini Voice Generation Failed",
-        details: error.stack || "No stack trace available",
-        suggestion: "Check if Google Cloud API Key has permissions for Gemini 2.0 Flash"
-      });
+      console.error("[TTS Final Error]:", error.message);
+      res.status(500).json({ error: "음성 생성 실패" });
     }
   });
 
