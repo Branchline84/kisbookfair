@@ -11,8 +11,10 @@ interface PhotoReviewProps {
 }
 
 export function PhotoReview({ imageSrc, onRetake, onDownload }: PhotoReviewProps) {
-  const handleDownload = () => {
-    // Trigger download
+  const [isUploading, setIsUploading] = React.useState(false);
+
+  const handleDownload = async () => {
+    // 1. Local Download
     const link = document.createElement('a');
     link.href = imageSrc;
     link.download = `photo_${new Date().getTime()}.jpg`;
@@ -20,14 +22,28 @@ export function PhotoReview({ imageSrc, onRetake, onDownload }: PhotoReviewProps
     link.click();
     document.body.removeChild(link);
     
-    // Confetti effect
-    confetti({
-      particleCount: 100,
-      spread: 70,
-      origin: { y: 0.6 }
-    });
-    
-    onDownload();
+    // 2. Online Upload (Cloudinary)
+    setIsUploading(true);
+    try {
+      const resp = await fetch('/api/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: imageSrc })
+      });
+      const data = await resp.json();
+      console.log("Cloudinary Upload Result:", data.url);
+      // Success confetti
+      confetti({
+        particleCount: 150,
+        spread: 100,
+        origin: { y: 0.6 }
+      });
+    } catch (e) {
+      console.error("Upload failed", e);
+    } finally {
+      setIsUploading(false);
+      onDownload();
+    }
   };
 
   return (
@@ -54,9 +70,19 @@ export function PhotoReview({ imageSrc, onRetake, onDownload }: PhotoReviewProps
         </button>
         <button 
           onClick={handleDownload}
-          className="flex-1 py-4 px-6 rounded-2xl font-bold text-white bg-emerald-600 hover:bg-emerald-700 transition-colors flex items-center justify-center gap-2 shadow-md"
+          disabled={isUploading}
+          className={`flex-1 py-4 px-6 rounded-2xl font-bold text-white transition-colors flex items-center justify-center gap-2 shadow-md ${
+            isUploading ? 'bg-slate-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700'
+          }`}
         >
-          <Download size={20} /> 다운로드
+          {isUploading ? (
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+              저장 중...
+            </div>
+          ) : (
+            <><Download size={20} /> 다운로드</>
+          )}
         </button>
       </div>
     </motion.div>
