@@ -4,6 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import OpenAI from "openai";
 import 'dotenv/config';
+import { GoogleGenAI } from "@google/genai";
 import { v2 as cloudinary } from 'cloudinary';
 
 const TIMEOUT_CHAT = 30000;
@@ -36,7 +37,7 @@ async function startServer() {
     });
   });
 
-  // Google Cloud TTS Premium Endpoint (Neural2)
+  // Google Cloud TTS Premium Endpoint (Heavily upgraded to Gemini 2.0 Flash Audio)
   app.post("/api/tts/google", async (req, res) => {
     const { characterName, text } = req.body;
     const apiKey = process.env.GOOGLE_CLOUD_API_KEY;
@@ -46,57 +47,51 @@ async function startServer() {
     }
 
     try {
-      let voiceName = 'ko-KR-Neural2-A'; // Default (Ara)
-      let pitch = 0;
-      let speakingRate = 1.05;
+      let voiceName = 'Aoede'; // Default (Warm Female)
+      let promptPrefix = "말하듯이 아주 자연스럽고 다정하게 들려줘: ";
 
       if (characterName === '호백') {
-        voiceName = 'ko-KR-Neural2-C'; // Male, deep
-        pitch = -2.0;
+        voiceName = 'Fenrir'; // Deep Male
+        promptPrefix = "듬직하고 친근하며 낮은 목소리로 말해줘: ";
       } else if (characterName === '갓도령') {
-        voiceName = 'ko-KR-Neural2-C'; // Male (소년 느낌을 위해 pitch+rate 조정)
-        pitch = 4.0;
-        speakingRate = 1.1;
+        voiceName = 'Puck'; // Youthful
+        promptPrefix = "발랄하고 자신감 넘치는 소년의 목소리로 말해줘: ";
       } else if (characterName === '아라') {
-        voiceName = 'ko-KR-Neural2-A'; // Female, warm
-        pitch = 3.0;
+        voiceName = 'Aoede'; 
+        promptPrefix = "밝고 상냥한 소녀의 목소리로 말해줘: ";
       }
 
-      console.log(`[Google TTS] Character: ${characterName}, Text: "${text.substring(0, 20)}..."`);
+      console.log(`[Gemini TTS] Character: ${characterName}, Voice: ${voiceName}, Text: "${text.substring(0, 20)}..."`);
 
-      const response = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
+      // @ts-ignore
+      const { createClient } = await import("@google/genai");
+      const client = createClient({ apiKey: apiKey, platform: "google_ai" });
+
+      const response = await client.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: [{ role: "user", parts: [{ text: `${promptPrefix}${text}` }] }],
+        config: {
+          // @ts-ignore
+          responseModalities: ["AUDIO"],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName },
+            },
+          },
         },
-        body: JSON.stringify({
-          input: { text },
-          voice: { languageCode: 'ko-KR', name: voiceName },
-          audioConfig: { 
-            audioEncoding: 'MP3',
-            pitch: pitch,
-            speakingRate: speakingRate
-          }
-        })
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        console.error("[Google TTS] API Error Response:", errorData);
-        throw new Error(errorData.error?.message || `Google TTS API Request Failed (${response.status})`);
-      }
+      const audioBase64 = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
 
-      const data: any = await response.json();
-      if (data.audioContent) {
-        console.log("[Google TTS] Success - Audio data received");
-        res.json({ audioContent: data.audioContent });
+      if (audioBase64) {
+        console.log("[Gemini TTS] Success - Generative Audio received");
+        res.json({ audioContent: audioBase64 });
       } else {
-        throw new Error("Google TTS returned no audio data field");
+        throw new Error("Gemini AI returned no audio data");
       }
     } catch (error: any) {
-      console.error("[Google TTS] Proxy Error:", error.message || error);
-      res.status(500).json({ error: error.message || "Google TTS Failed" });
+      console.error("[Gemini TTS] Error:", error.message || error);
+      res.status(500).json({ error: error.message || "Gemini Voice Generation Failed" });
     }
   });
 
