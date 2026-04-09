@@ -180,13 +180,15 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
       recognition.onerror = (event: any) => {
         console.error("Recognition error:", event.error);
         setIsListening(false);
-        // 네트워크/임시 오류면 자동 재시도
-        if (event.error === 'network' || event.error === 'audio-capture') {
+        if (['network', 'audio-capture', 'no-speech', 'aborted'].includes(event.error)) {
           setTimeout(() => startRecognition(), 1500);
         }
       };
       recognition.onend = () => {
         setIsListening(false);
+        if (!isSpeakingRef.current && detectedActivityRef.current === 'none') {
+          setTimeout(() => startRecognition(), 300);
+        }
       };
       recognitionRef.current = recognition;
     }

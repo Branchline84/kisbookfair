@@ -4,7 +4,6 @@ import path from "path";
 import { fileURLToPath } from "url";
 import OpenAI from "openai";
 import 'dotenv/config';
-import { GoogleGenAI } from "@google/genai";
 import { v2 as cloudinary } from 'cloudinary';
 
 const TIMEOUT_CHAT = 30000;
@@ -37,108 +36,40 @@ async function startServer() {
     });
   });
 
-  // Google Cloud TTS Premium Endpoint (Heavily upgraded to Gemini 2.0 Flash Audio)
+  // OpenAI TTS Endpoint
   app.post("/api/tts/google", async (req, res) => {
     const { characterName, text } = req.body;
-    const apiKey = process.env.GOOGLE_CLOUD_API_KEY;
+    const apiKey = process.env.OPENAI_API_KEY;
 
     if (!apiKey) {
-      return res.status(500).json({ error: "GOOGLE_CLOUD_API_KEY missing on server" });
+      return res.status(500).json({ error: "OPENAI_API_KEY missing on server" });
     }
 
+    // 캐릭터별 목소리 매핑
+    // nova: 밝고 따뜻한 여성 / echo: 활기찬 남성 / onyx: 깊고 듬직한 남성
+    let voice: 'nova' | 'shimmer' | 'echo' | 'onyx' | 'alloy' | 'fable' = 'nova';
+    if (characterName === '호백') voice = 'onyx';
+    else if (characterName === '갓도령') voice = 'echo';
+    else if (characterName === '아라') voice = 'nova';
+
+    console.log(`[OpenAI TTS] character: ${characterName}, voice: ${voice}`);
+
     try {
-      let voiceName = 'Aoede'; 
-      let promptPrefix = "말하듯이 아주 자연스럽고 다정하게 들려줘: ";
-
-      if (characterName === '호백') {
-        voiceName = 'Fenrir'; 
-        promptPrefix = "듬직하고 친근하며 낮은 목소리로 말해줘: ";
-      } else if (characterName === '갓도령') {
-        voiceName = 'Puck'; 
-        promptPrefix = "발랄하고 자신감 넘치는 소년의 목소리로 말해줘: ";
-      } else if (characterName === '아라') {
-        voiceName = 'Aoede'; 
-        promptPrefix = "밝고 상냥한 소녀의 목소리로 말해줘: ";
-      }
-      console.log(`[Gemini TTS Attempt] voice: ${voiceName}`);
-
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: `${promptPrefix}${text}` }] }],
-          generationConfig: {
-            responseModalities: ["AUDIO"],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: { voiceName }
-              }
-            }
-          }
-        })
+      const openai = new OpenAI({ apiKey });
+      const mp3Response = await openai.audio.speech.create({
+        model: 'tts-1-hd',
+        voice,
+        input: text,
+        speed: 1.0,
       });
 
-      if (response.ok) {
-        const data: any = await response.json();
-        const audioBase64 = data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-        if (audioBase64) {
-          console.log("[Gemini TTS] Success - Converting to WAV");
-          
-          // Prepend WAV header for 24kHz, 16-bit, Mono PCM
-          const pcmBuffer = Buffer.from(audioBase64, 'base64');
-          const wavHeader = getWavHeader(pcmBuffer.length, 24000);
-          const wavBuffer = Buffer.concat([wavHeader, pcmBuffer]);
-          
-          return res.json({ audioContent: wavBuffer.toString('base64'), format: 'wav' });
-        }
-      }
-      
-      // --- Fallback to Standard Google TTS ---
-      console.warn("[TTS Fallback] Gemini failed/unsupported, using standard...");
-      let standardVoice = 'ko-KR-Neural2-A';
-      if (characterName === '호백') standardVoice = 'ko-KR-Neural2-C';
-      else if (characterName === '갓도령') standardVoice = 'ko-KR-Neural2-B';
-
-      const stdTtsResponse = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          input: { text },
-          voice: { languageCode: 'ko-KR', name: standardVoice },
-          audioConfig: { audioEncoding: 'MP3', pitch: 0, speakingRate: 1.05 }
-        })
-      });
-
-      const stdData: any = await stdTtsResponse.json();
-      if (stdData.audioContent) {
-        res.json({ audioContent: stdData.audioContent, format: 'mp3' });
-      } else {
-        throw new Error("All TTS engines failed");
-      }
+      const buffer = Buffer.from(await mp3Response.arrayBuffer());
+      res.json({ audioContent: buffer.toString('base64'), format: 'mp3' });
     } catch (error: any) {
-      console.error("[TTS Final Error]:", error.message);
+      console.error("[TTS Error]:", error.message);
       res.status(500).json({ error: "음성 생성 실패" });
     }
   });
-
-  // Helper function to create a WAV header for LINEAR16 PCM
-  function getWavHeader(dataLength: number, sampleRate: number) {
-    const buffer = Buffer.alloc(44);
-    buffer.write('RIFF', 0);
-    buffer.writeUInt32LE(dataLength + 36, 4);
-    buffer.write('WAVE', 8);
-    buffer.write('fmt ', 12);
-    buffer.writeUInt32LE(16, 16); // Subchunk1Size
-    buffer.writeUInt16LE(1, 20); // AudioFormat (PCM)
-    buffer.writeUInt16LE(1, 22); // NumChannels (Mono)
-    buffer.writeUInt32LE(sampleRate, 24); // SampleRate
-    buffer.writeUInt32LE(sampleRate * 2, 28); // ByteRate
-    buffer.writeUInt16LE(2, 32); // BlockAlign
-    buffer.writeUInt16LE(16, 34); // BitsPerSample
-    buffer.write('data', 36);
-    buffer.writeUInt32LE(dataLength, 40);
-    return buffer;
-  }
 
   // Cloudinary Image Upload Endpoint
   app.post("/api/upload", async (req, res) => {
