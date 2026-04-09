@@ -33,13 +33,14 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
 
   const isSpeakingRef = useRef(false);
   const isListeningRef = useRef(false);
+  const isProcessingRef = useRef(false);
   const detectedActivityRef = useRef(detectedActivity);
   const initializedCharacter = useRef<string | null>(null);
   const handleUserMessageRef = useRef<(text: string) => void>(() => {});
 
   // startRecognition은 ref만 사용해서 deps를 [] 로 고정 - audio useEffect가 재실행되지 않도록 방지
   const startRecognition = useCallback(() => {
-    if (!recognitionRef.current || isSpeakingRef.current || isListeningRef.current || detectedActivityRef.current !== 'none') {
+    if (!recognitionRef.current || isSpeakingRef.current || isListeningRef.current || isProcessingRef.current || detectedActivityRef.current !== 'none') {
       return;
     }
     try {
@@ -56,6 +57,10 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
   useEffect(() => {
     isListeningRef.current = isListening;
   }, [isListening]);
+
+  useEffect(() => {
+    isProcessingRef.current = isProcessing;
+  }, [isProcessing]);
 
   useEffect(() => {
     detectedActivityRef.current = detectedActivity;
@@ -107,6 +112,7 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
       audio.onerror = () => {
         setIsSpeaking(false);
         console.error("Audio stream error");
+        setTimeout(startRecognition, 1000);
       };
 
       playAudio();
@@ -180,13 +186,14 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
       recognition.onerror = (event: any) => {
         console.error("Recognition error:", event.error);
         setIsListening(false);
-        if (['network', 'audio-capture', 'no-speech', 'aborted'].includes(event.error)) {
+        // network 오류는 재시작하지 않음 (무한루프 방지). no-speech/aborted만 재시작.
+        if (['audio-capture', 'no-speech', 'aborted'].includes(event.error)) {
           setTimeout(() => startRecognition(), 1500);
         }
       };
       recognition.onend = () => {
         setIsListening(false);
-        if (!isSpeakingRef.current && detectedActivityRef.current === 'none') {
+        if (!isSpeakingRef.current && !isProcessingRef.current && detectedActivityRef.current === 'none') {
           setTimeout(() => startRecognition(), 300);
         }
       };
@@ -203,27 +210,30 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
   // Audio analysis for Waveform
   useEffect(() => {
     if (isListening) startAudioAnalysis();
-    else stopAudioAnalysis();
-    return () => stopAudioAnalysis();
+    else stopAudioAnalysis(false);
+    return () => stopAudioAnalysis(true); // 언마운트 시에만 스트림 해제
   }, [isListening]);
 
   const startAudioAnalysis = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      const audioCtx = new AudioContextClass();
-      if (audioCtx.state === 'suspended') await audioCtx.resume();
-      
-      const analyser = audioCtx.createAnalyser();
-      const source = audioCtx.createMediaStreamSource(stream);
-      source.connect(analyser);
-      analyser.fftSize = 128;
-      
-      audioCtxRef.current = audioCtx;
-      analyserRef.current = analyser;
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
-      
+      // 스트림이 없을 때만 getUserMedia 호출 (재인식 시 재사용)
+      if (!streamRef.current) {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        streamRef.current = stream;
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        const audioCtx = new AudioContextClass();
+        if (audioCtx.state === 'suspended') await audioCtx.resume();
+        const analyser = audioCtx.createAnalyser();
+        const source = audioCtx.createMediaStreamSource(stream);
+        source.connect(analyser);
+        analyser.fftSize = 128;
+        audioCtxRef.current = audioCtx;
+        analyserRef.current = analyser;
+      }
+
+      if (!analyserRef.current) return;
+      const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
+
       const updateLevel = () => {
         if (!analyserRef.current) return;
         analyserRef.current.getByteFrequencyData(dataArray);
@@ -239,12 +249,16 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
     }
   };
 
-  const stopAudioAnalysis = () => {
+  const stopAudioAnalysis = (releaseStream = false) => {
     if (animationRef.current) cancelAnimationFrame(animationRef.current);
-    if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
-    if (audioCtxRef.current) audioCtxRef.current.close().catch(() => {});
-    animationRef.current = null; streamRef.current = null; audioCtxRef.current = null; analyserRef.current = null;
+    animationRef.current = null;
     setAudioLevel(0);
+    // 스트림은 컴포넌트 언마운트 시에만 해제 (인식 세션 간 재사용)
+    if (releaseStream) {
+      if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+      if (audioCtxRef.current) audioCtxRef.current.close().catch(() => {});
+      streamRef.current = null; audioCtxRef.current = null; analyserRef.current = null;
+    }
   };
 
   const handleUserMessage = async (text: string) => {
