@@ -23,6 +23,8 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
   const [detectedActivity, setDetectedActivity] = useState<'photo' | 'craft' | 'tshirt' | 'none'>('none');
   const [quotaExceeded, setQuotaExceeded] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
+  // iOS requires a user gesture before audio can play — show tap-to-start overlay
+  const [audioUnlocked, setAudioUnlocked] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const recognitionRef = useRef<any>(null);
@@ -38,7 +40,6 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
   const initializedCharacter = useRef<string | null>(null);
   const handleUserMessageRef = useRef<(text: string) => void>(() => {});
 
-  // startRecognition은 ref만 사용해서 deps를 [] 로 고정 - audio useEffect가 재실행되지 않도록 방지
   const startRecognition = useCallback(() => {
     if (!recognitionRef.current || isSpeakingRef.current || isListeningRef.current || isProcessingRef.current || detectedActivityRef.current !== 'none') {
       return;
@@ -50,21 +51,10 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
     }
   }, []);
 
-  useEffect(() => {
-    isSpeakingRef.current = isSpeaking;
-  }, [isSpeaking]);
-
-  useEffect(() => {
-    isListeningRef.current = isListening;
-  }, [isListening]);
-
-  useEffect(() => {
-    isProcessingRef.current = isProcessing;
-  }, [isProcessing]);
-
-  useEffect(() => {
-    detectedActivityRef.current = detectedActivity;
-  }, [detectedActivity]);
+  useEffect(() => { isSpeakingRef.current = isSpeaking; }, [isSpeaking]);
+  useEffect(() => { isListeningRef.current = isListening; }, [isListening]);
+  useEffect(() => { isProcessingRef.current = isProcessing; }, [isProcessing]);
+  useEffect(() => { detectedActivityRef.current = detectedActivity; }, [detectedActivity]);
 
   const stopAllAudio = useCallback(() => {
     if (audioRef.current) {
@@ -74,49 +64,42 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
-    isSpeakingRef.current = false; // ref 즉시 업데이트 (startRecognition 가드 해제)
+    isSpeakingRef.current = false;
     setIsSpeaking(false);
   }, []);
 
-  // Issue 2, 5: Audio playback logic with better state management
+  // Audio playback
   useEffect(() => {
-    if (audioBase64) {
-      stopAllAudio();
-      
-      const audioUrl = audioBase64.startsWith('data:') ? audioBase64 : `data:audio/wav;base64,${audioBase64}`;
-      const audio = new Audio(audioUrl);
-      audioRef.current = audio;
-      
-      const playAudio = async () => {
-        try {
-          setIsSpeaking(true);
-          await audio.play();
-        } catch (e: any) {
-          if (e.name === 'AbortError') {
-            console.log("Audio playback interrupted by pause (expected during cleanup)");
-            return;
-          }
-          console.error("[Audio] Playback failed:", e);
-          setIsSpeaking(false);
-          // Removed native fallback to prevent "stupid machine sound" (Issue: User feedback)
-          // notify user visually if needed, but the text is already there.
-          setTimeout(startRecognition, 1000);
-        }
-      };
+    if (!audioBase64) return;
+    stopAllAudio();
 
-      audio.onended = () => {
-        setIsSpeaking(false);
-        startRecognition();
-      };
+    const audioUrl = audioBase64.startsWith('data:')
+      ? audioBase64.replace('data:audio/mp3;', 'data:audio/mpeg;')
+      : `data:audio/mpeg;base64,${audioBase64}`;
+    const audio = new Audio(audioUrl);
+    audioRef.current = audio;
 
-      audio.onerror = () => {
+    const playAudio = async () => {
+      try {
+        setIsSpeaking(true);
+        await audio.play();
+      } catch (e: any) {
+        if (e.name === 'AbortError') return;
+        console.error("[Audio] Playback failed:", e);
         setIsSpeaking(false);
-        console.error("Audio stream error");
         setTimeout(startRecognition, 1000);
-      };
+      }
+    };
 
-      playAudio();
-    }
+    audio.onended = () => { setIsSpeaking(false); startRecognition(); };
+    audio.onerror = () => {
+      setIsSpeaking(false);
+      console.error("Audio stream error");
+      setTimeout(startRecognition, 1000);
+    };
+
+    playAudio();
+
     return () => {
       if (audioRef.current) {
         audioRef.current.pause();
@@ -126,8 +109,9 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
     };
   }, [audioBase64, startRecognition]);
 
-  // Initial greeting
+  // Initial greeting — only after user has tapped (iOS audio unlock)
   useEffect(() => {
+    if (!audioUnlocked) return;
     if (initializedCharacter.current === character.name) return;
     initializedCharacter.current = character.name;
 
@@ -135,40 +119,36 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
       setIsProcessing(true);
       const greeting = `안녕? 나는 ${character.name}야. 만나서 반가워~ 넌 이름이 뭐야?`;
       setMessages([{ role: 'ai', text: greeting }]);
-      
+
       let audio: string | null = null;
       const timeoutId = setTimeout(() => setIsProcessing(false), TIMEOUTS.GREETING_INIT);
 
       try {
-        const audioPromise = getCachedGreetingAudio(character.name).then(async (cached) => {
-          if (cached) return cached;
-          return await generateAudio(character.name, greeting);
-        });
-        audio = await audioPromise;
+        const cached = await getCachedGreetingAudio(character.name);
+        audio = cached ?? await generateAudio(character.name, greeting);
       } catch (error: any) {
         console.error("Greeting audio error:", error);
       } finally {
         clearTimeout(timeoutId);
         setIsProcessing(false);
       }
-      
+
       if (audio) {
         setAudioBase64(audio);
       } else {
         console.error("[Greeting] Audio failed");
-        setIsSpeaking(false);
         setTimeout(startRecognition, 1000);
       }
     };
     initGreeting();
-  }, [character, startRecognition]);
+  }, [audioUnlocked, character, startRecognition]);
 
-  // handleUserMessageRef 항상 최신 함수를 가리키도록 동기화 (stale closure 방지)
+  // handleUserMessage ref sync
   useEffect(() => {
     handleUserMessageRef.current = handleUserMessage;
   });
 
-  // Recognition setup (한 번만 실행, onresult는 ref를 통해 최신 핸들러 호출)
+  // Recognition setup (once)
   useEffect(() => {
     // @ts-ignore
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -186,7 +166,6 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
       recognition.onerror = (event: any) => {
         console.error("Recognition error:", event.error);
         setIsListening(false);
-        // network 오류는 재시작하지 않음 (무한루프 방지). no-speech/aborted만 재시작.
         if (['audio-capture', 'no-speech', 'aborted'].includes(event.error)) {
           setTimeout(() => startRecognition(), 1500);
         }
@@ -207,16 +186,15 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
     };
   }, []);
 
-  // Audio analysis for Waveform
+  // Audio analysis for waveform
   useEffect(() => {
     if (isListening) startAudioAnalysis();
     else stopAudioAnalysis(false);
-    return () => stopAudioAnalysis(true); // 언마운트 시에만 스트림 해제
+    return () => stopAudioAnalysis(true);
   }, [isListening]);
 
   const startAudioAnalysis = async () => {
     try {
-      // 스트림이 없을 때만 getUserMedia 호출 (재인식 시 재사용)
       if (!streamRef.current) {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         streamRef.current = stream;
@@ -224,8 +202,7 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
         const audioCtx = new AudioContextClass();
         if (audioCtx.state === 'suspended') await audioCtx.resume();
         const analyser = audioCtx.createAnalyser();
-        const source = audioCtx.createMediaStreamSource(stream);
-        source.connect(analyser);
+        audioCtx.createMediaStreamSource(stream).connect(analyser);
         analyser.fftSize = 128;
         audioCtxRef.current = audioCtx;
         analyserRef.current = analyser;
@@ -233,7 +210,6 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
 
       if (!analyserRef.current) return;
       const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
-
       const updateLevel = () => {
         if (!analyserRef.current) return;
         analyserRef.current.getByteFrequencyData(dataArray);
@@ -253,7 +229,6 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
     if (animationRef.current) cancelAnimationFrame(animationRef.current);
     animationRef.current = null;
     setAudioLevel(0);
-    // 스트림은 컴포넌트 언마운트 시에만 해제 (인식 세션 간 재사용)
     if (releaseStream) {
       if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
       if (audioCtxRef.current) audioCtxRef.current.close().catch(() => {});
@@ -263,56 +238,57 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
 
   const handleUserMessage = async (text: string) => {
     if (!text.trim()) return;
-    
+
     const newMessages = [...messages, { role: 'user' as const, text }];
     setMessages(newMessages);
     setIsProcessing(true);
     setAudioBase64(null);
-    
-    // Safety timeout to prevent "no response" hang
+
     const safetyTimeout = setTimeout(() => {
-      if (isProcessing) {
+      if (isProcessingRef.current) {
         console.error("[Chat] Request timed out");
         setIsProcessing(false);
-        const timeoutMsg = "미안해, 지금은 서버가 좀 느린 것 같아. 다시 한 번 말해줄래?";
-        setMessages(prev => [...prev, { role: 'ai' as const, text: timeoutMsg }]);
+        setMessages(prev => [...prev, { role: 'ai' as const, text: "미안해, 지금은 서버가 좀 느린 것 같아. 다시 한 번 말해줄래?" }]);
       }
     }, TIMEOUTS.CHAT_RESPONSE);
-    
+
     try {
       const aiResponse = await generateChatResponse(character.name, character.personality, messages, text);
       clearTimeout(safetyTimeout);
-      
-      let audio = await generateAudio(character.name, aiResponse.text);
-      
+
+      const audio = await generateAudio(character.name, aiResponse.text);
       setMessages([...newMessages, { role: 'ai' as const, text: aiResponse.text }]);
       setDetectedActivity(aiResponse.detectedActivity);
-      
+
       if (audio) {
         setAudioBase64(audio);
       } else {
-        console.error("[TTS] All engines failed to provide audio");
-        // Don't use mechanical sound, just show text and start mic
+        console.error("[TTS] Audio generation failed");
         setIsSpeaking(false);
         setTimeout(startRecognition, 1000);
       }
     } catch (e: any) {
       clearTimeout(safetyTimeout);
       console.error("[Chat] Error", e);
-      const fallbackText = "미안해, 지금은 귀가 잘 안 들려. 다시 말해줄래?";
-      setMessages([...newMessages, { role: 'ai' as const, text: fallbackText }]);
-      setIsProcessing(false);
+      setMessages([...newMessages, { role: 'ai' as const, text: "미안해, 지금은 귀가 잘 안 들려. 다시 말해줄래?" }]);
       setTimeout(startRecognition, 2000);
     } finally {
       setIsProcessing(false);
     }
   };
 
+  // Called from the tap-to-start overlay — unlocks iOS audio autoplay
+  const handleStart = () => {
+    // Play a silent audio synchronously inside the click handler to unlock iOS autoplay
+    const silent = new Audio();
+    silent.play().catch(() => {});
+    setAudioUnlocked(true);
+  };
+
   const toggleListening = () => {
     if (isListening) {
       recognitionRef.current?.stop();
     } else {
-      // 오디오 재생 중이어도 버튼 누르면 즉시 중단하고 마이크 시작
       stopAllAudio();
       startRecognition();
     }
@@ -321,12 +297,28 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
   const latestAiMessage = [...messages].reverse().find(m => m.role === 'ai')?.text || '';
 
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
       className="w-full h-full flex flex-col bg-white overflow-hidden relative"
     >
+      {/* iOS audio unlock overlay */}
+      {!audioUnlocked && (
+        <div
+          className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-white/90 backdrop-blur-sm cursor-pointer"
+          onClick={handleStart}
+        >
+          <div className="flex flex-col items-center gap-6 select-none">
+            <div className="w-24 h-24 rounded-full bg-indigo-600 flex items-center justify-center shadow-2xl animate-pulse">
+              <Volume2 size={48} className="text-white" />
+            </div>
+            <p className="text-2xl font-bold text-indigo-700">화면을 눌러서 시작하기</p>
+            <p className="text-slate-400 text-sm">tap to start</p>
+          </div>
+        </div>
+      )}
+
       {quotaExceeded && (
-        <div className="absolute top-0 left-0 w-full bg-orange-500 text-white text-center py-2 z-50 font-medium text-sm flex items-center justify-center gap-4">
+        <div className="absolute top-0 left-0 w-full bg-orange-500 text-white text-center py-2 z-40 font-medium text-sm flex items-center justify-center gap-4">
           <span>⚠️ 할당량 초과로 임시 음성을 사용합니다.</span>
           <button onClick={() => setQuotaExceeded(false)} className="bg-white text-orange-500 px-3 py-1 rounded-full text-xs font-bold">다시 시도</button>
         </div>
@@ -334,13 +326,13 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
 
       {/* Character Area */}
       <div className="h-[55vh] min-h-[450px] relative flex items-end justify-center p-4 bg-gradient-to-b from-slate-50 to-white overflow-hidden shrink-0">
-        <CharacterMedia 
+        <CharacterMedia
           src={character.image} idleSrc={character.idleImage} isSpeaking={isSpeaking}
           mood={isProcessing ? 'thinking' : detectedActivity !== 'none' ? 'excited' : 'neutral'}
           className="w-full h-full z-10"
         />
         <div className="absolute inset-0 z-0 opacity-40">
-           <VoiceVisualizer isListening={isListening} isSpeaking={isSpeaking} isProcessing={isProcessing} audioLevel={audioLevel} analyser={analyserRef.current} />
+          <VoiceVisualizer isListening={isListening} isSpeaking={isSpeaking} isProcessing={isProcessing} audioLevel={audioLevel} analyser={analyserRef.current} />
         </div>
       </div>
 
@@ -372,7 +364,7 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
         <div className="w-full flex flex-col items-center gap-4">
           {detectedActivity !== 'none' && !isProcessing ? (
             <div className="w-full flex flex-col gap-2">
-              <button 
+              <button
                 onClick={() => { stopAllAudio(); onActivitySelect(detectedActivity); }}
                 className="w-full py-5 rounded-2xl font-bold text-xl text-white bg-indigo-600 hover:bg-indigo-700 flex items-center justify-center gap-2 shadow-lg"
               >
@@ -385,7 +377,7 @@ export function Conversation({ character, onActivitySelect, onBack }: Conversati
               <p className="text-slate-500 font-bold text-sm">{isListening ? "듣고 있어요! 말씀해주세요" : "버튼을 누르고 대답해주세요"}</p>
               <div className="relative flex items-center justify-center h-24 w-full">
                 <div className="absolute w-48 h-48 opacity-50"><VoiceVisualizer isListening={isListening} isSpeaking={isSpeaking} isProcessing={isProcessing} audioLevel={audioLevel} /></div>
-                <button 
+                <button
                   onClick={toggleListening} disabled={isProcessing}
                   className={`relative z-10 w-20 h-20 rounded-full flex items-center justify-center shadow-2xl transition-all active:scale-90 ${isListening ? 'bg-red-500 text-white' : 'bg-indigo-600 text-white'} ${isProcessing ? 'opacity-50' : ''}`}
                 >
